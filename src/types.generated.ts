@@ -574,7 +574,6 @@ export interface TokenList {
 /** `--version --json`. */
 export interface VersionInfo {
   features: Array<string>;
-  json_shapes: Array<string>;
   mcp_protocol_versions: Array<string>;
   name: string;
   version: string;
