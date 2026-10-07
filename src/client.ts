@@ -3,10 +3,15 @@
 // the same methods run on it instead: no gaiadesk-cli needed, same results,
 // same errors (see `backend`). Given an `apiKey`, they go to GaiaDesk's
 // hosted HTTPS API instead (api.ts): same results and errors again, and the
-// operations the API does not serve are a UsageError.
+// operations the API does not serve are a UsageError. The same /v1 API is
+// served by the desk itself: `transport: 'local'` (code on the desk, over its
+// socket or pipe, local.ts) and `transport: 'lan'` (a desk's LAN gateway,
+// pinned TLS, lan.ts) run the very same operation code.
 
 import * as A from './args.js';
-import { ApiTransport, notOverApi } from './api.js';
+import { ApiTransport } from './api.js';
+import { lanTransport } from './lan.js';
+import { localTransport } from './local.js';
 import type { ApiCallOptions, FetchLike } from './api.js';
 import {
   CliNotFoundError,
@@ -103,10 +108,31 @@ export interface GaiaDeskOptions {
    * desk verifies it); a person's own session works on their own desks without.
    */
   deskToken?: string;
-  /** API transport: the API's base URL. Default `https://api.gaiadesk.net/v1`. */
+  /**
+   * API transport: the API's base URL. Default `https://api.gaiadesk.net/v1`.
+   * LAN transport (required): the desk's gateway, `https://<desk>:7443/v1`.
+   */
   baseUrl?: string;
   /** API transport: the `fetch` to use (default: the global one). */
   fetch?: FetchLike;
+  /**
+   * How operations reach desks. Default: `api` given an `apiKey`, else
+   * `direct` (the native library or gaiadesk-cli, see `backend`).
+   * - `local`: code running on the desk, through the GaiaDesk app's own /v1
+   *   API over its Unix socket (`~/.gaiadesk/api.sock`) or Windows named pipe
+   *   (`\\.\pipe\gaiadesk-api-<user>`). Credentials: `deskToken` if given,
+   *   else the desk's local admin token (`~/.gaiadesk/api-token`, or `token`).
+   * - `lan`: a desk's LAN gateway at `baseUrl` (https), its self-signed
+   *   certificate pinned by `fingerprint`; needs `deskToken` (here or per call).
+   * Same methods, results and errors as the `api` transport.
+   */
+  transport?: 'direct' | 'api' | 'local' | 'lan';
+  /** Local transport: the socket path or pipe name (default: `$GAIADESK_API_DIR/api.sock` or `~/.gaiadesk/api.sock`; Windows `$GAIADESK_API_PIPE` or `\\.\pipe\gaiadesk-api-<user>`). */
+  socketPath?: string;
+  /** Local transport: the desk's local admin token (`gdlocal_…`; default: read from `$GAIADESK_API_DIR/api-token` or `~/.gaiadesk/api-token`). */
+  token?: string;
+  /** LAN transport (required): the gateway certificate's SHA-256 fingerprint, as the desk's Settings shows it (`ab:cd:…`; colons and case optional). */
+  fingerprint?: string;
 }
 
 /**
@@ -186,22 +212,53 @@ export class GaiaDesk {
 
   constructor(opts: GaiaDeskOptions = {}) {
     this.opts = { ...opts };
-    if (opts.apiKey === undefined) {
-      if (opts.deskToken !== undefined || opts.baseUrl !== undefined) {
-        throw new UsageError('deskToken and baseUrl are for the API transport: give apiKey too', { kind: 'usage' });
-      }
-      this.apiT = null;
-    } else {
-      if (opts.backend !== undefined || opts.cli !== undefined || opts.native !== undefined) {
-        throw new UsageError('apiKey selects the API transport; it cannot be combined with backend, cli or native', { kind: 'usage' });
-      }
-      this.apiT = new ApiTransport({ apiKey: opts.apiKey, deskToken: opts.deskToken, baseUrl: opts.baseUrl, fetch: opts.fetch });
+    this.apiT = GaiaDesk.httpTransport(opts);
+  }
+
+  /** The /v1 transport the options choose (api, local, lan), or null for direct; their options checked. */
+  private static httpTransport(o: GaiaDeskOptions): ApiTransport | null {
+    const t = o.transport ?? (o.apiKey === undefined ? 'direct' : 'api');
+    if (t !== 'direct' && t !== 'api' && t !== 'local' && t !== 'lan') {
+      throw new UsageError(`transport is direct, api, local or lan (not ${JSON.stringify(t)})`, { kind: 'usage' });
     }
+    const usage = (m: string) => new UsageError(m, { kind: 'usage' });
+    const given = (keys: (keyof GaiaDeskOptions)[]) => keys.filter((k) => o[k] !== undefined);
+    const only = (allowed: (keyof GaiaDeskOptions)[], what: string) => {
+      const extra = given((['apiKey', 'deskToken', 'baseUrl', 'fetch', 'socketPath', 'token', 'fingerprint'] as const).filter((k) => !allowed.includes(k)));
+      if (extra.length) throw usage(`${extra.join(', ')} ${extra.length === 1 ? 'is' : 'are'} not for ${what}`);
+    };
+    if (t !== 'direct') {
+      const cliOpts = given(['backend', 'cli', 'native']);
+      if (cliOpts.length) {
+        throw usage(t === 'api' && o.transport === undefined
+          ? 'apiKey selects the API transport; it cannot be combined with backend, cli or native'
+          : `the ${t} transport cannot be combined with ${cliOpts.join(', ')}`);
+      }
+    }
+    if (t === 'direct') {
+      if (o.deskToken !== undefined || o.baseUrl !== undefined) {
+        throw usage('deskToken and baseUrl are for the API transport: give apiKey too (or transport: local / lan)');
+      }
+      only([], 'the direct transport (they are for transport: api, local or lan)');
+      return null;
+    }
+    if (t === 'api') {
+      if (o.apiKey === undefined) throw usage('the api transport needs an apiKey');
+      only(['apiKey', 'deskToken', 'baseUrl', 'fetch'], 'the api transport');
+      return new ApiTransport({ apiKey: o.apiKey, deskToken: o.deskToken, baseUrl: o.baseUrl, fetch: o.fetch });
+    }
+    if (t === 'local') {
+      only(['deskToken', 'socketPath', 'token'], 'the local transport');
+      return localTransport({ socketPath: o.socketPath, token: o.token, deskToken: o.deskToken, env: o.env });
+    }
+    only(['deskToken', 'baseUrl', 'fingerprint'], 'the lan transport');
+    if (o.baseUrl === undefined) throw usage('the lan transport needs baseUrl: the desk\'s gateway, https://<desk>:7443/v1');
+    return lanTransport({ baseUrl: o.baseUrl, fingerprint: o.fingerprint as string, deskToken: o.deskToken });
   }
 
   /** On the API transport, the UsageError for an operation it does not serve. */
   private cliOnly(what: string, hint?: string): void {
-    if (this.apiT) throw notOverApi(what, hint);
+    if (this.apiT) throw this.apiT.notServed(what, hint);
   }
 
   /** The native backend when this client uses it (decided once, on first use). */
@@ -229,9 +286,13 @@ export class GaiaDesk {
     }
   }
 
-  /** Which backend runs the operations: `api` (the hosted API, given `apiKey`), `native` (@gaiadesk/sdk-native) or `cli` (gaiadesk-cli). */
-  get backend(): 'native' | 'cli' | 'api' {
-    if (this.apiT) return 'api';
+  /**
+   * Which backend runs the operations: `api` (the hosted API, given
+   * `apiKey`), `local` / `lan` (a desk's own /v1 API), `native`
+   * (@gaiadesk/sdk-native) or `cli` (gaiadesk-cli).
+   */
+  get backend(): 'native' | 'cli' | 'api' | 'local' | 'lan' {
+    if (this.apiT) return this.apiT.transport;
     return this.nat() ? 'native' : 'cli';
   }
 
@@ -271,7 +332,7 @@ export class GaiaDesk {
 
   /** Run any gaiadesk-cli command and collect its output, exit code untouched. The escape hatch (always gaiadesk-cli). */
   raw(args: readonly string[], opts: CallOptions & { input?: string | Uint8Array } = {}): Promise<Completed> {
-    if (this.apiT) return Promise.reject(notOverApi('raw()'));
+    if (this.apiT) return Promise.reject(this.apiT.notServed('raw()'));
     return runCli(this.inv(args, opts.input, opts.signal));
   }
 
@@ -299,7 +360,7 @@ export class GaiaDesk {
    * to answer it. Asked once per CLI path in this process.
    */
   versionInfo(): Promise<VersionInfo | null> {
-    if (this.apiT) return Promise.reject(notOverApi('versionInfo()'));
+    if (this.apiT) return Promise.reject(this.apiT.notServed('versionInfo()'));
     return cliVersionInfo(this.cli, () => runCli(this.inv(['--version', '--json'])));
   }
 
@@ -472,13 +533,13 @@ export class GaiaDesk {
 
   /** API transport only: write `data` to `remote` on the desk (`PUT /desks/{id}/files`, at most 256 MB). */
   uploadBytes(data: Uint8Array | string, deskId: string, remote: string, o: CallOptions = {}): Promise<CpSummary> {
-    if (!this.apiT) return Promise.reject(new UsageError('uploadBytes is for the API transport (give apiKey); use upload() with a local file', { kind: 'usage' }));
+    if (!this.apiT) return Promise.reject(new UsageError('uploadBytes is for the API, local and lan transports; use upload() with a local file', { kind: 'usage' }));
     return this.apiT.uploadBytes(data, deskId, remote, o);
   }
 
   /** API transport only: the bytes of `remote` on the desk (`GET /desks/{id}/files`, at most 256 MB). */
   downloadBytes(deskId: string, remote: string, o: CallOptions = {}): Promise<Uint8Array> {
-    if (!this.apiT) return Promise.reject(new UsageError('downloadBytes is for the API transport (give apiKey); use download() to a local file', { kind: 'usage' }));
+    if (!this.apiT) return Promise.reject(new UsageError('downloadBytes is for the API, local and lan transports; use download() to a local file', { kind: 'usage' }));
     return this.apiT.downloadBytes(deskId, remote, o);
   }
 
@@ -575,7 +636,7 @@ export class GaiaDesk {
 
   /** `measure --json`: round trip and clock offset. `rtt_ms` is null if no ping came back (CLI exit 1). */
   measure(deskId: string, o: { count?: number } & CallOptions = {}): Promise<MeasureResult> {
-    if (this.apiT) return Promise.reject(notOverApi('measure()'));
+    if (this.apiT) return Promise.reject(this.apiT.notServed('measure()'));
     const n = this.nat();
     if (n) return n.call<MeasureResult>('measure', N.measure(deskId, o.count), o);
     return this.op<MeasureResult>(A.measureArgs(deskId, o.count), [0, 1], o);
@@ -633,7 +694,7 @@ export class GaiaDesk {
 
   /** `mesh status --json`. */
   meshStatus(c: CallOptions = {}): Promise<MeshStatus> {
-    if (this.apiT) return Promise.reject(notOverApi('meshStatus()'));
+    if (this.apiT) return Promise.reject(this.apiT.notServed('meshStatus()'));
     const n = this.nat();
     if (n) return n.call<MeshStatus>('mesh_status', {}, c);
     return this.op<MeshStatus>(['mesh', 'status', '--json'], [0], c);
@@ -649,7 +710,7 @@ export class GaiaDesk {
 
   /** `disconnect --json`: close the held connection to one desk, or to all (no argument): `{closed: [desk ids]}`. */
   disconnect(deskId?: string, c: CallOptions = {}): Promise<Disconnected> {
-    if (this.apiT) return Promise.reject(notOverApi('disconnect()'));
+    if (this.apiT) return Promise.reject(this.apiT.notServed('disconnect()'));
     const n = this.nat();
     if (n) return n.call<Disconnected>('disconnect', N.disconnect(deskId), c);
     return this.op<Disconnected>(A.disconnectArgs(deskId), [0], c);

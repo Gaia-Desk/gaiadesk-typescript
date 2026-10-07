@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased: local and lan transports
+
+- `new GaiaDesk({ transport: 'local' })`: code running on a desk drives it
+  (and what it reaches) through the GaiaDesk app's own `/v1` API over its
+  Unix socket (`$GAIADESK_API_DIR/api.sock`, else `~/.gaiadesk/api.sock`) or
+  Windows named pipe (`$GAIADESK_API_PIPE`, else
+  `\\.\pipe\gaiadesk-api-<user>`); `socketPath` overrides. An agent token
+  (`deskToken`) goes as `X-GaiaDesk-Desk-Token`; otherwise the desk's local
+  admin token (from `api-token` beside the socket, or `token`) as Bearer. No
+  socket: `UnreachableError`, reason `local_api_unavailable`.
+- `new GaiaDesk({ transport: 'lan', baseUrl, fingerprint, deskToken })`: a
+  desk's LAN gateway over HTTPS, its self-signed certificate pinned by
+  SHA-256 before any request byte is sent (`FingerprintMismatchError`,
+  reason `fingerprint_mismatch`, on a mismatch); agent tokens only.
+- Both reuse the API transport's operations unchanged (same results, errors,
+  SSE streams, file transfer, held waits) over a `node:http` connection;
+  `backend` is `'local'` / `'lan'`. `transport` may also be `'api'` or
+  `'direct'`; without it nothing changes.
+- New exports: `FingerprintMismatchError`, `normalizeFingerprint`,
+  `localPipeName`, `pipeUser`, `localSocketPath`, `localTokenPath`,
+  `localApiDir`, `LOCAL_API_UNAVAILABLE`, `HttpTransportName`.
+
 ## Unreleased: the API transport's env, shell and waitJob
 
 - API transport: `env` on `exec`, `execStream` and `runJob`, `shell` on

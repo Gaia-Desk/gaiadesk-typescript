@@ -28,9 +28,17 @@
 //
 // Desk ids only the API has: 999999990 answers HTML (no envelope),
 // 999999991 is rate limited (429, Retry-After: 7).
+//
+// The same mock serves as a DESK's own /v1 API (`desk: 'local'` on a Unix
+// socket or named pipe, `desk: 'lan'` over TLS with a given certificate), with
+// the desk's credentials: an agent token alone in X-GaiaDesk-Desk-Token runs
+// desk operations (not token administration); the local admin token
+// (`Authorization: Bearer gdlocal_…`) runs everything locally and is refused
+// on the LAN (401 admin_token_local_only).
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,8 +58,12 @@ export interface Recorded {
 }
 
 export interface MockApi {
-  /** The base URL, `http://127.0.0.1:<port>/v1`. */
+  /** The base URL, `http://127.0.0.1:<port>/v1` (`https://` for lan; for local, the socket is `socketPath`). */
   url: string;
+  /** Local: the socket or pipe it listens on. */
+  socketPath?: string;
+  /** Connections accepted: a refused fingerprint still made one (the TLS handshake), but no request. */
+  readonly connections: number;
   requests: Recorded[];
   close(): Promise<void>;
 }
@@ -108,7 +120,7 @@ const requestId = () => `req_${(++reqSeq).toString(16).padStart(24, '0')}`;
 
 function statusFor(kind: string, reason?: string): number {
   if (kind === 'usage') return 400;
-  if (kind === 'refused') return reason === 'unauthenticated' ? 401 : reason === 'rate_limited' ? 429 : 403;
+  if (kind === 'refused') return reason === 'unauthenticated' || reason === 'admin_token_local_only' ? 401 : reason === 'rate_limited' ? 429 : 403;
   if (kind === 'unreachable') return reason === 'timeout' ? 504 : 409;
   if (kind === 'failed') return 422;
   return 502;
@@ -196,12 +208,28 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
-async function handle(res: ServerResponse, rec: Recorded): Promise<void> {
+export interface MockOptions {
+  /** Serve as a desk's own API: `local` (on `socketPath`) or `lan` (TLS with `tls`). */
+  desk?: 'local' | 'lan';
+  socketPath?: string;
+  tls?: { key: string; cert: string };
+}
+
+async function handle(res: ServerResponse, rec: Recorded, o: MockOptions): Promise<void> {
   const auth = rec.headers.authorization ?? '';
-  const key = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const deskToken = rec.headers['x-gaiadesk-desk-token'];
+  let key = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (o.desk) {
+    // A desk's own API: the admin token (local only) is an owner; an agent token alone runs desk operations.
+    if (key.startsWith('gdlocal_') && o.desk === 'lan') {
+      return sendError(res, { kind: 'refused', reason: 'admin_token_local_only', message: "the desk's admin token works only on the desk itself; send an agent token in X-GaiaDesk-Desk-Token" });
+    }
+    if (key && !key.startsWith('gdlocal_')) return sendError(res, { kind: 'refused', reason: 'unauthenticated', message: "not this desk's admin token" });
+    if (key) key = 'session-admin';
+    else if (deskToken) key = 'ak_desk-token';
+  }
   if (!key) return sendError(res, { kind: 'refused', reason: 'unauthenticated', message: 'Sign in, or send an API key as `Authorization: Bearer ak_…`.' });
   const isKey = key.startsWith('ak_');
-  const deskToken = rec.headers['x-gaiadesk-desk-token'];
   const m = /^\/v1\/desks(?:\/([^/]+)(\/.*)?)?$/.exec(rec.path);
   if (!m) return sendError(res, { kind: 'usage', message: `no route ${rec.method} ${rec.path}` });
   if (!m[1]) {
@@ -359,9 +387,10 @@ async function handle(res: ServerResponse, rec: Recorded): Promise<void> {
   return sendError(res, { kind: 'usage', message: `no route ${rec.method} ${rec.path}` });
 }
 
-export async function startMockApi(): Promise<MockApi> {
+export async function startMockApi(o: MockOptions = {}): Promise<MockApi> {
   const requests: Recorded[] = [];
-  const server = createServer((req, res) => {
+  let connections = 0;
+  const listener: RequestListener = (req, res) => {
     void (async () => {
       const u = new URL(req.url ?? '/', 'http://127.0.0.1');
       const body = await readBody(req);
@@ -374,22 +403,31 @@ export async function startMockApi(): Promise<MockApi> {
           'x-gaiadesk-desk-token': req.headers['x-gaiadesk-desk-token'] as string | undefined,
           'content-type': req.headers['content-type'],
           accept: req.headers.accept,
+          host: req.headers.host,
+          'transfer-encoding': req.headers['transfer-encoding'],
         },
         body,
       };
       requests.push(rec);
       try {
-        await handle(res, rec);
+        await handle(res, rec, o);
       } catch (e) {
         if (!res.headersSent) sendError(res, { kind: 'protocol', message: `mock API: ${(e as Error).message}` });
         else res.end();
       }
     })();
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  const { port } = server.address() as AddressInfo;
+  };
+  const server = o.tls ? createHttpsServer({ key: o.tls.key, cert: o.tls.cert }, listener) : createServer(listener);
+  server.on('connection', () => connections++);
+  if (o.socketPath) await new Promise<void>((r) => server.listen(o.socketPath, r));
+  else await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = o.socketPath ? 0 : (server.address() as AddressInfo).port;
   return {
-    url: `http://127.0.0.1:${port}/v1`,
+    url: o.socketPath ? 'http://localhost/v1' : `${o.tls ? 'https' : 'http'}://127.0.0.1:${port}/v1`,
+    socketPath: o.socketPath,
+    get connections() {
+      return connections;
+    },
     requests,
     close: () =>
       new Promise<void>((r) => {

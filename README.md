@@ -43,6 +43,7 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 - [Install](#install)
 - [Backends](#backends)
 - [API transport](#api-transport)
+- [Local and LAN](#local-and-lan)
 - [Quickstart](#quickstart)
 - [Credentials](#credentials)
 - [API](#api)
@@ -78,7 +79,8 @@ the `cli` option to point at it.
 ## Backends
 
 `gd.backend` says which one a client uses: `'native'` or `'cli'` (or
-`'api'`, given an `apiKey`: see [API transport](#api-transport)).
+`'api'`, given an `apiKey`: see [API transport](#api-transport); or `'local'`
+/ `'lan'`: see [Local and LAN](#local-and-lan)).
 
 | Option | Effect |
 |---|---|
@@ -171,6 +173,65 @@ available over the API transport; use the CLI or native transport"):
 `revokeToken({all: true})` / `{account: true}`, `execStream` with
 `stdin: true`, `whoami`, and the CLI's own `version`, `versionInfo`,
 `features`, `raw`.
+
+## Local and LAN
+
+GaiaDesk desks serve the same `/v1` desk operations themselves: the same
+routes, results, error envelope, statuses, Server-Sent Events and held
+waits as the hosted API. Two transports use them, with the same methods,
+results and errors as the [API transport](#api-transport) (and the same
+list of what is not available; hosted-only routes answer 404 `no_such_route`).
+Node only (`node:net`, `node:tls`, imported when used); no runtime dependency.
+
+**`local`: code running on the desk itself**, through the GaiaDesk app's
+local API (Settings → GaiaDesk API → Local API):
+
+```ts
+const gd = new GaiaDesk({ transport: 'local' });
+gd.backend; // 'local'
+const r = await gd.exec('123456789', 'hostname');
+```
+
+- It connects over HTTP/1.1 on the Unix socket `$GAIADESK_API_DIR/api.sock`
+  (when that is an absolute directory), else `~/.gaiadesk/api.sock`; on
+  Windows the named pipe `$GAIADESK_API_PIPE`, else
+  `\\.\pipe\gaiadesk-api-<user>` (`<user>`: `%USERNAME%`, lowercased,
+  anything outside `[a-z0-9._-]` as `_`, at most 64 characters). `socketPath`
+  overrides either.
+- Credentials: a `deskToken` (an agent token, `gdagt_…`, here or per call) is
+  sent as `X-GaiaDesk-Desk-Token`; without one, the desk's local admin token
+  (`gdlocal_…`, read from `$GAIADESK_API_DIR/api-token`, else
+  `~/.gaiadesk/api-token`, or given as `token`) as `Authorization: Bearer`.
+- No socket or pipe (or no token file and no `deskToken`) is an
+  `UnreachableError` with reason `local_api_unavailable`: "GaiaDesk is not
+  serving its local API here: is the app running, and is Settings → GaiaDesk
+  API → Local API on?"
+
+**`lan`: a desk's opt-in LAN gateway**, its self-signed certificate pinned
+by the SHA-256 fingerprint the desk shows in its Settings:
+
+```ts
+const gd = new GaiaDesk({
+  transport: 'lan',
+  baseUrl: 'https://gaiadesk-123456789.local:7443/v1',   // or https://192.168.1.20:7443/v1
+  fingerprint: 'ab:cd:…',                                // 32 hex pairs; colons and case optional
+  deskToken: process.env.GAIADESK_DESK_TOKEN,            // required: agent tokens only on the LAN
+});
+const { devices } = await gd.devices(); // this desk, and the paired desks it reaches on its LAN
+await gd.exec(devices[1].desk_id, 'uptime'); // forwarded by the gateway
+```
+
+- `https://` only. The certificate's SHA-256 is checked after the TLS
+  handshake and **before any byte of the request is sent**; a mismatch is a
+  `FingerprintMismatchError` (an `UnreachableError`, reason
+  `fingerprint_mismatch`, with `expected` and `actual`): it may not be your
+  desk, so do not proceed.
+- A `deskToken` is required (here or per call; without one, a `UsageError`
+  before anything is sent): the gateway refuses the admin token (401
+  `admin_token_local_only`).
+
+Helpers: `normalizeFingerprint`, `localPipeName`, `pipeUser`,
+`localSocketPath`, `localTokenPath`, `localApiDir`.
 
 ## Quickstart
 
@@ -440,9 +501,12 @@ it was given (`fake-cli-old.js` plays a CLI too old to answer `--version
 [`test/fixtures/mock-native.ts`](test/fixtures/mock-native.ts) stands in for
 `@gaiadesk/sdk-native`, and
 [`test/fixtures/mock-api.ts`](test/fixtures/mock-api.ts) for the hosted API
-(a `node:http` server that answers every route from the same fake CLI).
+(a `node:http` server that answers every route from the same fake CLI); the
+same mock plays a desk's own API on a Unix socket / named pipe (`local`) and
+over TLS with the self-signed certificate in
+[`test/fixtures/lan-cert.ts`](test/fixtures/lan-cert.ts) (`lan`).
 [`test/transports.test.ts`](test/transports.test.ts) runs the same
-behavioural cases against the CLI and the API transport.
+behavioural cases against the CLI, API, local and LAN transports.
 
 [`src/types.generated.ts`](src/types.generated.ts) is generated from
 GaiaDesk's JSON Schema of the CLI's `--json` shapes (`gaiadesk-cli schema

@@ -1,7 +1,8 @@
-// The same behaviour on both transports: every case below runs once against
-// the CLI transport (the fake gaiadesk-cli) and once against the API
-// transport (the mock hosted API, which answers from the same fake CLI).
-// Results, error classes, kinds, reasons, desks and exit codes must match.
+// The same behaviour on every transport: every case below runs against the
+// CLI transport (the fake gaiadesk-cli), the API transport (the mock hosted
+// API, which answers from the same fake CLI), and the same mock served as a
+// desk's own API: over a Unix socket / named pipe (local) and over pinned TLS
+// (lan). Results, error classes, kinds, reasons, desks and exit codes must match.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -21,6 +22,7 @@ import {
 } from '../dist/index.js';
 import type { CpSummary, MintResult } from '../dist/index.js';
 import { startMockApi } from './fixtures/mock-api.js';
+import { CERT, FINGERPRINT, KEY } from './fixtures/lan-cert.js';
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-cli.js', import.meta.url));
 const OK = '123456789';
@@ -32,13 +34,22 @@ const PLAIN = 'plain-desk';
 
 const api = await startMockApi();
 after(() => api.close());
+const socketPath =
+  process.platform === 'win32'
+    ? `\\\\.\\pipe\\gaiadesk-sdk-test-${process.pid}-${Date.now()}`
+    : join(mkdtempSync(join(tmpdir(), 'gd-')), 'api.sock');
+const local = await startMockApi({ desk: 'local', socketPath });
+after(() => local.close());
+const lan = await startMockApi({ desk: 'lan', tls: { key: KEY, cert: CERT } });
+after(() => lan.close());
+const ADMIN = `gdlocal_${'ab'.repeat(32)}`;
 
 interface Transport {
-  name: 'cli' | 'api';
+  name: 'cli' | 'api' | 'local' | 'lan';
   /** A client for desk operations. */
   desk(): GaiaDesk;
-  /** A client allowed to administer tokens (the CLI: the desk's password; the API: a person's session). */
-  owner(): GaiaDesk;
+  /** A client allowed to administer tokens (the CLI: the desk's password; the API: a person's session; local: the admin token). Not on the LAN (agent tokens only). */
+  owner?(): GaiaDesk;
   /** A client that may not administer tokens. */
   anon(): GaiaDesk;
 }
@@ -55,6 +66,17 @@ const TRANSPORTS: Transport[] = [
     desk: () => new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: api.url }),
     owner: () => new GaiaDesk({ apiKey: 'session-person', baseUrl: api.url }),
     anon: () => new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: api.url }),
+  },
+  {
+    name: 'local',
+    desk: () => new GaiaDesk({ transport: 'local', socketPath, deskToken: 'gdagt_test' }),
+    owner: () => new GaiaDesk({ transport: 'local', socketPath, token: ADMIN }),
+    anon: () => new GaiaDesk({ transport: 'local', socketPath, deskToken: 'gdagt_test' }),
+  },
+  {
+    name: 'lan',
+    desk: () => new GaiaDesk({ transport: 'lan', baseUrl: lan.url, fingerprint: FINGERPRINT, deskToken: 'gdagt_test' }),
+    anon: () => new GaiaDesk({ transport: 'lan', baseUrl: lan.url, fingerprint: FINGERPRINT, deskToken: 'gdagt_test' }),
   },
 ];
 
@@ -214,11 +236,11 @@ both('cp: upload and download one file; failures and refusals are typed', async 
   const dir = files();
   const up = await gd.upload(join(dir, 'app.txt'), OK, 'deploy/');
   assert.deepEqual([up.direction, up.desk, up.dirs], ['upload', OK, 0]);
-  if (t.name === 'api') assert.equal(up.destination, 'deploy/app.txt', 'a remote folder keeps the file name');
+  if (t.name !== 'cli') assert.equal(up.destination, 'deploy/app.txt', 'a remote folder keeps the file name');
   const local = join(dir, 'got.log');
   const down = await gd.download(OK, 'logs/app.log', local);
   assert.deepEqual([down.direction, down.desk], ['download', OK]);
-  if (t.name === 'api') assert.equal(readFileSync(local, 'utf8'), 'contents of logs/app.log\n');
+  if (t.name !== 'cli') assert.equal(readFileSync(local, 'utf8'), 'contents of logs/app.log\n');
   await assert.rejects(gd.upload(join(dir, 'fail.txt'), OK, 'x/'), (e) => e instanceof OperationFailedError && (e.json as CpSummary).failed.length === 1 && e.exitCode === 1);
   await assert.rejects(gd.upload(join(dir, 'app.txt'), REFUSED, 'x/'), (e) => e instanceof RefusedError && /turned off/.test(e.message) && e.desk === REFUSED);
   await assert.rejects(gd.upload(join(dir, 'app.txt'), PLAIN, 'x/'), (e) => e instanceof GaiaDeskError && /offline/.test(e.message) && e.exitCode === 255);
@@ -229,6 +251,7 @@ both('cp: upload and download one file; failures and refusals are typed', async 
 
 both('tokens: only the owner administers them; create, list, revoke', async (t) => {
   await assert.rejects(t.anon().listTokens(OK), RefusedError);
+  if (!t.owner) return; // the LAN gateway takes agent tokens only
   const gd = t.owner();
   const made = (await gd.createToken({ desks: [OK, OTHER], name: 'bot', scopes: ['exec', 'cp'] })) as MintResult;
   assert.deepEqual(made.tokens.map((x) => x.desk), [OK, OTHER]);

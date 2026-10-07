@@ -47,6 +47,25 @@ export interface ApiOptions {
   fetch?: FetchLike;
 }
 
+/** The transports that speak GaiaDesk's /v1 HTTP API: hosted, on the desk itself, or a desk's LAN gateway. */
+export type HttpTransportName = 'api' | 'local' | 'lan';
+
+/**
+ * How an ApiTransport reaches a /v1 API and proves who it is: the same
+ * operation code then runs over the hosted API (`api`), the desk's own socket
+ * or pipe (`local`, local.ts) or a desk's LAN gateway (`lan`, lan.ts).
+ */
+export interface HttpConfig {
+  transport: HttpTransportName;
+  /** The API's base URL (`…/v1`). */
+  baseUrl: string;
+  fetch: FetchLike;
+  /** The credential headers for one request (`deskToken`: the call's own, when given). */
+  credentials(deskToken: string | undefined): Record<string, string> | Promise<Record<string, string>>;
+  /** What could not be reached, for the error: `the GaiaDesk API (https://…)`. */
+  where: string;
+}
+
 /** Per call: the abort signal, a desk token for this call only, and how long to wait for a sleeping desk. */
 export interface ApiCallOptions {
   signal?: AbortSignalLike;
@@ -63,9 +82,11 @@ interface Req extends ApiCallOptions {
   accept?: string;
 }
 
-/** The UsageError for an operation the API does not serve. */
-export function notOverApi(what: string, hint = 'use the CLI or native transport (construct GaiaDesk without apiKey)'): UsageError {
-  return new UsageError(`${what} is not available over the API transport; ${hint}`, { kind: 'usage', argv: [what] });
+const LABEL: Record<HttpTransportName, string> = { api: 'API', local: 'local', lan: 'lan' };
+
+/** The UsageError for an operation the /v1 API does not serve (over `transport`: api, local or lan). */
+export function notOverApi(what: string, hint = 'use the CLI or native transport (construct GaiaDesk without apiKey)', transport: HttpTransportName = 'api'): UsageError {
+  return new UsageError(`${what} is not available over the ${LABEL[transport]} transport; ${hint}`, { kind: 'usage', argv: [what] });
 }
 
 const UNITS: Record<string, number> = { s: 1, sec: 1, secs: 1, m: 60, min: 60, mins: 60, h: 3600, d: 86400, w: 604800 };
@@ -100,22 +121,47 @@ function stdinText(stdin: string | Uint8Array | undefined): string | undefined {
 
 export class ApiTransport {
   readonly baseUrl: string;
-  private readonly key: string;
-  private readonly deskToken?: string;
+  /** Which transport this is: `api` (hosted), `local` (the desk's socket or pipe) or `lan` (a desk's LAN gateway). */
+  readonly transport: HttpTransportName;
+  private readonly where: string;
+  private readonly credentials: HttpConfig['credentials'];
   private readonly fetcher: FetchLike;
 
-  constructor(o: ApiOptions) {
+  /** The hosted API from an API key (ApiOptions), or any /v1 API from an HttpConfig (local.ts, lan.ts). */
+  constructor(o: ApiOptions | HttpConfig) {
+    if ('credentials' in o) {
+      this.transport = o.transport;
+      this.baseUrl = o.baseUrl.replace(/\/+$/, '');
+      this.where = o.where;
+      this.credentials = o.credentials;
+      this.fetcher = o.fetch;
+      return;
+    }
     if (typeof o.apiKey !== 'string' || !o.apiKey.trim()) throw new UsageError('apiKey must be a non-empty string', { kind: 'usage' });
     if (o.deskToken !== undefined && (typeof o.deskToken !== 'string' || !o.deskToken.trim())) {
       throw new UsageError('deskToken must be a non-empty string (a scoped agent token, gdagt_…)', { kind: 'usage' });
     }
-    this.key = o.apiKey.trim();
-    this.deskToken = o.deskToken?.trim();
+    const key = o.apiKey.trim();
+    const deskToken = o.deskToken?.trim();
+    this.transport = 'api';
     this.baseUrl = (o.baseUrl ?? DEFAULT_API_URL).replace(/\/+$/, '');
     if (!/^https?:\/\//i.test(this.baseUrl)) throw new UsageError(`baseUrl must be an http(s) URL: ${JSON.stringify(o.baseUrl)}`, { kind: 'usage' });
     const f = o.fetch ?? (globalThis as { fetch?: FetchLike }).fetch;
     if (typeof f !== 'function') throw new UsageError('the API transport needs a global fetch (Node 18+ or a browser), or the `fetch` option', { kind: 'usage' });
     this.fetcher = f;
+    this.where = `the GaiaDesk API (${this.baseUrl})`;
+    // The API key, and the desk token when there is one.
+    this.credentials = (callToken) => {
+      const h: Record<string, string> = { Authorization: `Bearer ${key}` };
+      const t = callToken ?? deskToken;
+      if (t) h['X-GaiaDesk-Desk-Token'] = t;
+      return h;
+    };
+  }
+
+  /** The UsageError for an operation this transport does not serve. */
+  notServed(what: string, hint?: string): UsageError {
+    return notOverApi(what, hint ?? (this.transport === 'api' ? undefined : 'use the CLI or native transport'), this.transport);
   }
 
   // ───────────────────────────── HTTP ─────────────────────────────
@@ -128,14 +174,6 @@ export class ApiTransport {
     return `${this.baseUrl}${path}${q ? `?${q}` : ''}`;
   }
 
-  /** Every request's headers: the API key, and the desk token when there is one. */
-  headers(deskToken?: string): Record<string, string> {
-    const h: Record<string, string> = { Authorization: `Bearer ${this.key}` };
-    const t = deskToken ?? this.deskToken;
-    if (t) h['X-GaiaDesk-Desk-Token'] = t;
-    return h;
-  }
-
   /** One request; an HTTP failure is the typed error from its envelope. */
   async request(method: string, path: string, r: Req = {}, signal?: AbortSignal): Promise<ResponseLike> {
     const op = `${method} ${path}`;
@@ -144,7 +182,7 @@ export class ApiTransport {
       if (!Number.isInteger(r.wake) || r.wake < 0 || r.wake > 120) throw new UsageError('wake is whole seconds, 0 to 120', { kind: 'usage', argv: [op] });
       query.wake_s = r.wake;
     }
-    const headers = this.headers(r.deskToken);
+    const headers = { ...(await this.credentials(r.deskToken)) };
     headers.Accept = r.accept ?? 'application/json';
     let body: string | Uint8Array | undefined;
     if (r.json !== undefined) {
@@ -167,7 +205,12 @@ export class ApiTransport {
       res = await this.fetcher(this.url(path, query), { method, headers, body, signal: ctrl.signal });
     } catch (e) {
       if (ctrl.signal.aborted) throw new GaiaDeskError(`${op}: interrupted`, { kind: 'interrupted', exitCode: 130, argv: [op] });
-      throw new UnreachableError(`the GaiaDesk API could not be reached (${this.baseUrl}): ${(e as Error)?.message ?? e}`, {
+      if (e instanceof GaiaDeskError) {
+        // The transport's own typed error (local: no socket; lan: the fingerprint did not match).
+        if (e.argv.length === 0) Object.defineProperty(e, 'argv', { value: [op] });
+        throw e;
+      }
+      throw new UnreachableError(`${this.where} could not be reached: ${(e as Error)?.message ?? e}`, {
         kind: 'network',
         reason: 'network',
         exitCode: 255,
@@ -201,7 +244,7 @@ export class ApiTransport {
   /** `GET /desks`: `{devices, sources, notes}`, the CLI's `devices --json` shape (filtered to `deskId` when given). */
   async devices(o: { probe?: boolean; deskId?: string } & ApiCallOptions): Promise<DevicesResult> {
     A.devicesArgs(o);
-    if (o.probe) throw notOverApi('devices({ probe: true })', 'the API lists desks without dialling them; probe through the CLI or native transport');
+    if (o.probe) throw this.notServed('devices({ probe: true })', 'the API lists desks without dialling them; probe through the CLI or native transport');
     const r = await this.json<DevicesResult>('GET', '/desks', o);
     if (!isObj(r) || !Array.isArray(r.devices)) throw new ProtocolError('the GaiaDesk API listed no devices', { kind: 'protocol', argv: ['GET /desks'], json: r });
     if (o.deskId === undefined) return r;
@@ -242,7 +285,7 @@ export class ApiTransport {
 
   /** `POST /desks/{id}/exec?stream=1`: the ExecEvents as an OutputStream. */
   execStream(deskId: string, command: string | readonly string[], o: A.RunShapeOptions & ApiCallOptions & { cwd?: string; stdin?: string | Uint8Array | true; env?: Readonly<Record<string, string>> }): OutputStream {
-    if (o.stdin === true) throw notOverApi('execStream with stdin: true (writing stdin as it runs)', 'give `stdin` as text, or use the CLI or native transport');
+    if (o.stdin === true) throw this.notServed('execStream with stdin: true (writing stdin as it runs)', 'give `stdin` as text, or use the CLI or native transport');
     const spec = this.execSpec(deskId, command, { ...o, stdin: o.stdin as string | Uint8Array | undefined });
     const path = `${this.desk(deskId)}/exec`;
     const { signal, ...rest } = o;
@@ -252,12 +295,12 @@ export class ApiTransport {
   /** `PUT /desks/{id}/files?path=`: one local file, at most 256 MB. A `remote` ending in `/` is a folder: the file keeps its name. */
   async upload(local: string, deskId: string, remote: string, o: { recursive?: boolean } & ApiCallOptions): Promise<CpSummary> {
     A.cpArgs('upload', deskId, local, remote, !!o.recursive);
-    if (o.recursive) throw notOverApi('a recursive (folder) upload', 'the API copies single files; copy folders through the CLI or native transport');
+    if (o.recursive) throw this.notServed('a recursive (folder) upload', 'the API copies single files; copy folders through the CLI or native transport');
     const fs = await import('node:fs/promises');
     const st = await fs.stat(local).catch((e: Error) => {
       throw new GaiaDeskError(`cannot read ${local}: ${e.message}`, { kind: 'local', argv: ['upload'] });
     });
-    if (st.isDirectory()) throw notOverApi(`uploading the folder ${local}`, 'the API copies single files; copy folders through the CLI or native transport');
+    if (st.isDirectory()) throw this.notServed(`uploading the folder ${local}`, 'the API copies single files; copy folders through the CLI or native transport');
     if (st.size > API_FILE_LIMIT) throw new UsageError(`${local} is ${st.size} bytes; the API takes files up to 256 MB (copy larger ones through the CLI or native transport)`, { kind: 'usage', argv: ['upload'] });
     const bytes = new Uint8Array(await fs.readFile(local));
     const target = remote === '' || /[\\/]$/.test(remote) ? `${remote}${basename(local)}` : remote;
@@ -287,7 +330,7 @@ export class ApiTransport {
   /** `GET /desks/{id}/files?path=` into a local file (a `local` folder, or one ending in `/`, keeps the remote name). */
   async download(deskId: string, remote: string, local: string, o: { recursive?: boolean } & ApiCallOptions): Promise<CpSummary> {
     A.cpArgs('download', deskId, local, remote, !!o.recursive);
-    if (o.recursive) throw notOverApi('a recursive (folder) download', 'the API copies single files; copy folders through the CLI or native transport');
+    if (o.recursive) throw this.notServed('a recursive (folder) download', 'the API copies single files; copy folders through the CLI or native transport');
     const started = Date.now();
     const bytes = await this.downloadBytes(deskId, remote, o);
     const fs = await import('node:fs/promises');
@@ -384,7 +427,7 @@ export class ApiTransport {
    */
   async createToken(o: A.TokenCreateOptions & ApiCallOptions): Promise<MintResult> {
     A.tokenCreateArgs(o);
-    if (o.out !== undefined) throw notOverApi('createToken({ out })', 'the API returns the secret; write it to a file yourself, or use the CLI or native transport');
+    if (o.out !== undefined) throw this.notServed('createToken({ out })', 'the API returns the secret; write it to a file yourself, or use the CLI or native transport');
     if (o.name === undefined || !o.name.trim()) throw new UsageError('createToken needs a name over the API transport', { kind: 'usage' });
     const desks = (typeof o.desks === 'string' ? [o.desks] : [...o.desks]).map(A.checkDesk);
     const spec: Record<string, unknown> = {
@@ -418,8 +461,8 @@ export class ApiTransport {
   /** `DELETE /desks/{id}/tokens/{token_id}`: Revoked. */
   async revokeToken(deskId: string, which: string | { all: true }, o: { account?: boolean } & ApiCallOptions): Promise<TokenRevokeResult> {
     A.tokenRevokeArgs(deskId, which, !!o.account);
-    if (typeof which !== 'string') throw notOverApi('revokeToken({ all: true })', 'revoke each token by id (listTokens), or use the CLI or native transport');
-    if (o.account) throw notOverApi('revokeToken({ account: true })', 'the API revokes on the desk; drop `account`');
+    if (typeof which !== 'string') throw this.notServed('revokeToken({ all: true })', 'revoke each token by id (listTokens), or use the CLI or native transport');
+    if (o.account) throw this.notServed('revokeToken({ account: true })', 'the API revokes on the desk; drop `account`');
     return this.json<TokenRevokeResult>('DELETE', `${this.desk(deskId)}/tokens/${encodeURIComponent(which)}`, o);
   }
 }
