@@ -73,7 +73,7 @@ test('exec --json-stream and --cwd (gaiadesk-cli 0.10.324+)', () => {
 test('jobs, stats, measure', () => {
   assert.deepEqual(A.psArgs('1'), ['ps', '--desk-id', '1', '--json']);
   assert.deepEqual(A.killArgs('1', 'build'), ['kill', 'build', '--desk-id', '1', '--json']);
-  assert.deepEqual(A.logsArgs('1', 'build', { tail: 100, follow: true }), ['logs', 'build', '--desk-id', '1', '--follow', '--tail', '100']);
+  assert.deepEqual(A.logsArgs('1', 'build', { tail: 100, follow: true }), ['logs', 'build', '--desk-id', '1', '--follow', '--json', '--tail', '100']);
   assert.deepEqual(A.statsArgs('1'), ['stats', '--desk-id', '1', '--json']);
   assert.deepEqual(A.measureArgs('1', 5), ['measure', '--desk-id', '1', '--count', '5', '--json']);
   assert.throws(() => A.measureArgs('1', 0), UsageError);
@@ -97,9 +97,9 @@ test('forward pairs, mcp, disconnect, agent-connect', () => {
   assert.throws(() => A.forwardArgs('1', [{ remotePort: 0 }]), UsageError);
   assert.throws(() => A.forwardArgs('1', []), UsageError);
   assert.deepEqual(A.mcpArgs({ auditDir: '/a', allowDomains: ['example.com'] }, 'wss://x/ws'), ['mcp', '--server', 'wss://x/ws', '--allow-domain', 'example.com', '--audit-dir', '/a']);
-  assert.deepEqual(A.disconnectArgs(), ['disconnect', '--all']);
-  assert.deepEqual(A.disconnectArgs('1'), ['disconnect', '--desk-id', '1']);
-  assert.deepEqual(A.agentConnectArgs('1', 'wss://x/ws'), ['agent-connect', '--desk-id', '1', '--server', 'wss://x/ws']);
+  assert.deepEqual(A.disconnectArgs(), ['disconnect', '--all', '--json']);
+  assert.deepEqual(A.disconnectArgs('1'), ['disconnect', '--desk-id', '1', '--json']);
+  assert.deepEqual(A.agentConnectArgs('1', 'wss://x/ws'), ['agent-connect', '--desk-id', '1', '--server', 'wss://x/ws', '--json']);
 });
 
 test('locating gaiadesk-cli: $GAIADESK_CLI, @gaiadesk/cli, PATH, then the install locations', () => {

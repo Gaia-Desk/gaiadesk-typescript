@@ -7,17 +7,15 @@
 //   desk operations (cp, run, ps, logs, kill, stats, token, audit, ...):
 //               0 done; 1 ran and did not succeed; 254 refused; 255 own error.
 //
-// gaiadesk-cli 0.10.324+ prints ONE error envelope for every `--json`
-// failure: {"error": {"kind", "message", "reason"?, "desk"?}} with kind one of
-// usage, refused, unreachable, connection_lost, failed, protocol, and the
-// finer cause in `reason` (offline, unknown_desk, not_online, network,
-// not_signed_in, timeout, local, ...). Older CLIs printed other shapes
-// ({"error": "<text>"}, {"refused": "<text>"}, exec's {"error": {"kind":
-// "offline", ...}}, or only text on stderr); errorEnvelope() reads them all.
+// gaiadesk-cli prints ONE error envelope for every `--json` failure:
+// {"error": {"kind", "message", "reason"?, "desk"?}} with kind one of usage,
+// refused, unreachable, connection_lost, failed, protocol, and the finer cause
+// in `reason` (offline, unknown_desk, not_online, network, not_signed_in,
+// timeout, local, ...); errorEnvelope() reads it.
 //
 // The SDK's `kind` is the finest one known: the envelope's `reason` when it is
-// one of the SDK kinds below (so `offline` stays `offline` on every CLI), else
-// its kind. The error CLASS follows the envelope's kind.
+// one of the SDK kinds below (so `offline` stays `offline`), else its kind.
+// The error CLASS follows the envelope's kind.
 
 export type ErrorKind =
   | 'usage'
@@ -62,7 +60,7 @@ export class GaiaDeskError extends Error {
   readonly json: unknown;
   /** The finer cause (`offline`, `unknown_desk`, `timeout`, `local`, ...), or null. */
   readonly reason: string | null;
-  /** The desk the error concerned, when the CLI (0.10.324+) or native library said; else null. */
+  /** The desk the error concerned, when the CLI or native library said; else null. */
   readonly desk: string | null;
 
   constructor(message: string, details: ErrorDetails = {}) {
@@ -102,8 +100,6 @@ export class CommandError extends GaiaDeskError {
   }
 }
 
-const UNREACHABLE = new Set(['offline', 'unknown_desk', 'not_online', 'network', 'not_signed_in', 'timeout', 'unreachable']);
-
 /** The SDK's kinds: what `GaiaDeskError.kind` may be (besides `cli_error`, `not_found`). */
 export const SDK_KINDS: ReadonlySet<string> = new Set([
   'usage', 'offline', 'unknown_desk', 'not_online', 'refused', 'network', 'not_signed_in', 'timeout',
@@ -116,10 +112,7 @@ export function sdkKind(kind: string, reason?: string | null): ErrorKind {
   return kind as ErrorKind;
 }
 
-/**
- * The error class for an error's `kind` (one of the six of 0.10.324+, or an
- * older CLI's finer kind). `details.kind` (the SDK kind) defaults to `kind`.
- */
+/** The error class for an error's `kind` (one of the six). `details.kind` (the SDK kind) defaults to `kind`. */
 export function errorForKind(kind: string, message: string, details: ErrorDetails): GaiaDeskError {
   const d = { ...details, kind: details.kind ?? (kind as ErrorKind) };
   if (kind === 'usage') return new UsageError(message, d);
@@ -127,7 +120,7 @@ export function errorForKind(kind: string, message: string, details: ErrorDetail
   if (kind === 'connection_lost') return new ConnectionLostError(message, d);
   if (kind === 'failed') return new OperationFailedError(message, d);
   if (kind === 'protocol') return new ProtocolError(message, d);
-  if (UNREACHABLE.has(kind)) return new UnreachableError(message, d);
+  if (kind === 'unreachable') return new UnreachableError(message, d);
   return new GaiaDeskError(message, d);
 }
 
@@ -146,49 +139,35 @@ function isObj(v: unknown): v is Record<string, unknown> {
 
 /** What a gaiadesk-cli JSON output says went wrong. */
 export interface ErrorEnvelope {
-  /** A machine-readable kind, when the CLI gave one (every error from 0.10.324; before that only exec/shell's). */
-  kind?: string;
+  /** One of the six: usage, refused, unreachable, connection_lost, failed, protocol. */
+  kind: string;
   message: string;
-  /** The finer cause (0.10.324+): `offline`, `unknown_desk`, `timeout`, `local`, ... */
+  /** The finer cause: `offline`, `unknown_desk`, `timeout`, `local`, ... */
   reason?: string;
-  /** The desk it concerned (0.10.324+), when there was one. */
+  /** The desk it concerned, when there was one. */
   desk?: string;
 }
 
-/** The SDK's reading of one `{kind, message, reason?, desk?}` object. */
-function fromErrorObject(e: Record<string, unknown>): ErrorEnvelope {
-  const env: ErrorEnvelope = { kind: e.kind as string, message: typeof e.message === 'string' ? e.message : '' };
+/**
+ * THE place that knows how gaiadesk-cli spells an error in its JSON:
+ * `{"error": {"kind", "message", "reason"?, "desk"?}}`. Every error path in
+ * the SDK goes through here, so a change to the CLI's error envelope is a
+ * change to this function only. Returns null when the JSON is not an error
+ * (including exec's own `"error": null` on success).
+ */
+export function errorEnvelope(json: unknown): ErrorEnvelope | null {
+  if (!isObj(json)) return null;
+  const e = json.error;
+  if (!isObj(e) || typeof e.kind !== 'string') return null;
+  const env: ErrorEnvelope = { kind: e.kind, message: typeof e.message === 'string' ? e.message : '' };
   if (typeof e.reason === 'string' && e.reason) env.reason = e.reason;
   if (typeof e.desk === 'string' && e.desk) env.desk = e.desk;
   return env;
 }
 
-/**
- * THE place that knows how gaiadesk-cli spells an error in its JSON. Every
- * error path in the SDK goes through here, so a change to the CLI's error
- * envelope is a change to this function only. Shapes recognized:
- *
- *   {"error": {"kind", "message", "reason"?, "desk"?}}   every --json failure, 0.10.324+
- *                                                        (and exec/shell's `error` before that)
- *   {"error": "..."}                                     most desk operations, before 0.10.324
- *   {"refused": "..."}                                   cp, before 0.10.324
- *
- * Returns null when the JSON is not an error (including exec's own
- * `"error": null` on success).
- */
-export function errorEnvelope(json: unknown): ErrorEnvelope | null {
-  if (!isObj(json)) return null;
-  const e = json.error;
-  if (isObj(e) && typeof e.kind === 'string') return fromErrorObject(e);
-  if (typeof e === 'string' && e) return { message: e };
-  if (typeof json.refused === 'string' && json.refused) return { message: json.refused };
-  return null;
-}
-
 /** The details an envelope adds to an error: the SDK kind, reason and desk. */
 export function envelopeDetails(env: ErrorEnvelope, details: ErrorDetails): ErrorDetails {
-  const d: ErrorDetails = { ...details };
-  if (env.kind !== undefined) d.kind = sdkKind(env.kind, env.reason);
+  const d: ErrorDetails = { ...details, kind: sdkKind(env.kind, env.reason) };
   if (env.reason !== undefined) d.reason = env.reason;
   if (env.desk !== undefined) d.desk = env.desk;
   return d;
@@ -202,20 +181,16 @@ export interface FailedRun {
 }
 
 /**
- * The typed error for a failed run: the JSON's error envelope (with its kind
- * when it has one), else the exit code with the best message available
- * (envelope, a `{"desk", "ok": false, "message"}` reply, or stderr).
+ * The typed error for a failed run: the JSON's error envelope, else the exit
+ * code with the best message available (a `{"desk", "ok": false, "message"}`
+ * reply, or stderr).
  */
 export function errorFromRun(run: FailedRun, argv: readonly string[], json: unknown): GaiaDeskError {
   const details: ErrorDetails = { exitCode: run.code, stderr: run.stderr, argv, json };
+  const fallback = lastStderrLine(run.stderr) || `gaiadesk-cli exited with ${run.code ?? run.signal}`;
   const env = errorEnvelope(json);
-  if (env?.kind !== undefined) {
-    const msg = env.message || lastStderrLine(run.stderr) || `gaiadesk-cli exited with ${run.code ?? run.signal}`;
-    return errorForKind(env.kind, msg, envelopeDetails(env, details));
-  }
-  let msg = env?.message ?? '';
-  if (!msg && isObj(json) && typeof json.message === 'string') msg = json.message;
-  msg = msg || lastStderrLine(run.stderr) || `gaiadesk-cli exited with ${run.code ?? run.signal}`;
+  if (env) return errorForKind(env.kind, env.message || fallback, envelopeDetails(env, details));
+  const msg = isObj(json) && typeof json.message === 'string' && json.message ? json.message : fallback;
   return errorForExit(run.code, msg, details);
 }
 

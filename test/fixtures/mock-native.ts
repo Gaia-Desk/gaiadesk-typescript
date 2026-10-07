@@ -4,10 +4,8 @@
 // being the error envelope {"error": {kind, message, reason?, desk?}}).
 // Every call is recorded in `calls`.
 //
-// makeMock() answers as @gaiadesk/sdk-native 0.10.324+ (the CLI's 0.10.324
-// shapes: {"jobs"}, {"tokens"}, {"events"}, {"job", "output"}, {"mesh_ip"});
-// makeMock({ old: true }) as an older build (bare arrays and strings, exec
-// errors as text, no envelope on errors).
+// Results are the CLI's shapes: {"jobs"}, {"tokens"}, {"events"},
+// {"job", "output"}, {"mesh_ip"}, {"closed"}.
 //
 // Desk ids: 123456789 fine; offline-desk offline; refused-desk refuses;
 // usage-desk usage error; lost-desk connection lost.
@@ -36,11 +34,8 @@ export interface Call {
   signal?: boolean;
 }
 
-/** Which build the mock answering now plays (set on entry to each of its methods). */
-let OLD = false;
-
 function nativeError(kind: string, message: string, reason?: string, json?: unknown, desk?: string): Error {
-  const envelope = OLD ? undefined : { error: { kind, message, ...(reason ? { reason } : {}), ...(desk ? { desk } : {}) } };
+  const envelope = { error: { kind, message, ...(reason ? { reason } : {}), ...(desk ? { desk } : {}) } };
   return Object.assign(new Error(message), { name: 'NativeError', kind, reason: reason ?? null, json: json ?? envelope });
 }
 
@@ -102,7 +97,7 @@ class MockStream implements NativeOutputStream {
   }
   stop() {
     this.stopped = true;
-    this.push({ type: 'exit', result: { exit: 130, error: 'interrupted' } });
+    this.push({ type: 'exit', result: { exit: 130, error: { kind: 'failed', message: 'interrupted' } } });
     this.finish();
   }
   async wait() {
@@ -121,8 +116,7 @@ class MockStream implements NativeOutputStream {
   }
 }
 
-export function makeMock(o: { old?: boolean } = {}) {
-  const old = !!o.old;
+export function makeMock() {
   const calls: Call[] = [];
   const clients: NativeClientOptions[] = [];
   const streams: MockStream[] = [];
@@ -135,7 +129,6 @@ export function makeMock(o: { old?: boolean } = {}) {
     }
 
     async call(op: string, args: Json = {}, o: NativeCallOptions = {}): Promise<unknown> {
-      OLD = old;
       calls.push({ op, args, input: text(o.input), signal: !!o.signal });
       if (o.signal?.aborted) throw nativeError('interrupted', 'interrupted');
       const d = args.desk_id as string;
@@ -164,7 +157,7 @@ export function makeMock(o: { old?: boolean } = {}) {
         case 'job_list': {
           reach(d);
           const jobs = [{ name: 'build', command: 'make', state: 'running', started_at_ms: 1, log_bytes: 0, by: 'owner' }];
-          return OLD ? jobs : { jobs };
+          return { jobs };
         }
         case 'job_kill':
           reach(d);
@@ -172,7 +165,7 @@ export function makeMock(o: { old?: boolean } = {}) {
           return { name: args.name, command: 'make', state: 'killed', started_at_ms: 1, log_bytes: 0, by: 'owner' };
         case 'job_logs':
           reach(d);
-          return OLD ? 'line 1\nline 2\n' : { job: { name: args.name, command: 'make', state: 'running', started_at_ms: 1 }, output: 'line 1\nline 2\n' };
+          return { job: { name: args.name, command: 'make', state: 'running', started_at_ms: 1 }, output: 'line 1\nline 2\n' };
         case 'stats':
           reach(d);
           return { desk: d, hostname: 'office-pc', os: 'windows', os_version: '11', cpu_percent: 3, cpus: 8, load: null, mem_total_mb: 1, mem_free_mb: 1, disks: [], uptime_secs: 1, jobs_running: 0 };
@@ -183,27 +176,26 @@ export function makeMock(o: { old?: boolean } = {}) {
           return { tokens: args.desks.map((k: string) => ({ desk: k, token: { label: args.name ?? 'agent', id: 't1', scopes: args.scopes ?? [], issued_at_ms: 1, expires_at_ms: 2, revoked: false }, secret: 'gdagt_x' })) };
         case 'token_list': {
           const tokens = [{ label: 'bot', id: 't1', scopes: ['exec'], issued_at_ms: 1, expires_at_ms: 2, revoked: false }];
-          return OLD ? tokens : { tokens };
+          return { tokens };
         }
         case 'token_revoke':
           return args.account ? { desk: d, ok: true, message: 'revoked' } : { revoked: args.which ?? 'all', stopped_sessions: 0 };
         case 'audit': {
           const events = [{ at_ms: 5, desk: d, token: 'bot', token_id: 't1', action: 'exec.end', detail: 'make test', bytes: 0, exit_code: 0 }];
-          return OLD ? events : { events };
+          return { events };
         }
         case 'mesh_status':
           return { self: null, peers: [] };
         case 'mesh_ip':
-          return OLD ? '100.64.0.1' : { desk_id: d, mesh_ip: '100.64.0.1', renamed_to: null };
+          return { desk_id: d, mesh_ip: '100.64.0.1', renamed_to: null };
         case 'disconnect':
-          return OLD ? null : { closed: d ? [d] : [] };
+          return { closed: d ? [d] : [] };
         default:
           throw nativeError('usage', `unknown op ${op}`);
       }
     }
 
     async stream(op: string, args: Json, o: { signal?: unknown; stdin?: string | Uint8Array | true } = {}): Promise<NativeOutputStream> {
-      OLD = old;
       calls.push({ op: `stream:${op}`, args, input: o.stdin === true ? '<open>' : text(o.stdin) });
       reach(args.desk_id);
       const s = new MockStream();
@@ -224,7 +216,7 @@ export function makeMock(o: { old?: boolean } = {}) {
         s.push({ type: 'stdout', data: Buffer.from(`part1 part2 ${line}\n${args.cwd ? `in: ${args.cwd}\n` : ''}`) });
         s.push({ type: 'stderr', data: Buffer.from('warn\n') });
         const { stdout: _o, stderr: _e, truncated: _t, ...exit } = execResult(args.desk_id, line);
-        if (line === 'sleep') Object.assign(exit, { timed_out: true, remote_code: null, error: OLD ? 'timed out' : { kind: 'failed', message: 'the command ran past --timeout and was stopped' } });
+        if (line === 'sleep') Object.assign(exit, { timed_out: true, remote_code: null, error: { kind: 'failed', message: 'the command ran past --timeout and was stopped' } });
         s.push({ type: 'exit', result: exit });
         s.finish();
       }, 5);
@@ -234,7 +226,6 @@ export function makeMock(o: { old?: boolean } = {}) {
     desk(id: string) {
       return {
         forward: async (specs: Json[]): Promise<NativeForwardHandle> => {
-          OLD = old;
           calls.push({ op: 'forward', args: { desk_id: id, specs } });
           reach(id);
           let resolveDone!: (v: Json) => void;
@@ -249,7 +240,6 @@ export function makeMock(o: { old?: boolean } = {}) {
           };
         },
         screen: async () => {
-          OLD = old;
           calls.push({ op: 'screen', args: { desk_id: id } });
           reach(id);
           return { screenshot: async () => ({ png: Buffer.from('png'), width: 1280, height: 800 }), close: async () => {} };

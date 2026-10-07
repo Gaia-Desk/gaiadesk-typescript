@@ -4,13 +4,9 @@
 //
 // It speaks the stateless MCP revision 2026-07-28: no `initialize`, and every
 // request carries the protocol version and client capabilities in
-// params._meta. Every gaiadesk-cli mcp speaks it (0.10.324+ also speaks the
-// standard `initialize` lifecycle, which this client does not need).
-//
-// Tool names: gaiadesk-cli 0.10.324+ advertises `gaiadesk_<tool>` (and still
-// accepts the dotted spelling); older CLIs advertise and accept only
-// `gaiadesk.<tool>`. Use the `gaiadesk_` names (GAIADESK_TOOLS); the client
-// sends whichever spelling the server advertises.
+// params._meta. gaiadesk-cli mcp speaks it beside the standard `initialize`
+// lifecycle, which this client does not need. Tool names are `gaiadesk_<tool>`
+// (GAIADESK_TOOLS).
 
 import { CliStream } from './proc.js';
 import type { Invocation } from './proc.js';
@@ -35,7 +31,7 @@ export function withProtocolMeta(params: Record<string, unknown> = {}): Record<s
 }
 
 /**
- * The tools of `gaiadesk-cli mcp`, by their names since 0.10.324. Desk tools
+ * The tools of `gaiadesk-cli mcp`. Desk tools
  * (need a token file or code in the server's environment) first, then the
  * screen tools (need an agent token with the `screen` scope).
  */
@@ -64,27 +60,6 @@ export const GAIADESK_TOOLS = [
 ] as const;
 
 export type GaiaDeskToolName = (typeof GAIADESK_TOOLS)[number];
-
-/**
- * The other spelling of a GaiaDesk tool name: `gaiadesk_exec` (0.10.324+) <->
- * `gaiadesk.exec` (older CLIs). null for a name that is not a GaiaDesk tool.
- */
-export function toolNameAlias(name: string): string | null {
-  const m = /^gaiadesk([._])(.+)$/.exec(name);
-  if (!m) return null;
-  return `gaiadesk${m[1] === '.' ? '_' : '.'}${m[2]}`;
-}
-
-/**
- * The name to send for `name`: itself if the server advertises it, else its
- * alias if the server advertises that, else itself (the server's error then
- * says the tool is unknown). Callers may use either spelling.
- */
-export function resolveToolName(name: string, advertised?: ReadonlySet<string>): string {
-  if (!advertised || advertised.has(name)) return name;
-  const alias = toolNameAlias(name);
-  return alias !== null && advertised.has(alias) ? alias : name;
-}
 
 export interface McpTool {
   name: string;
@@ -125,8 +100,6 @@ export class McpClient {
   private buf = '';
   private closed = false;
   private readonly dec = new TextDecoder('utf-8');
-  /** Tool names the server advertised (from the last listTools()). */
-  private toolNames?: Set<string>;
 
   constructor(inv: Invocation) {
     this.stream = new CliStream(inv, true);
@@ -190,31 +163,16 @@ export class McpClient {
   /** The tools this server offers with the credentials it was started with. */
   async listTools(): Promise<McpTool[]> {
     const r = await this.request('tools/list');
-    const tools = (r.tools as McpTool[]) ?? [];
-    this.toolNames = new Set(tools.map((t) => t.name));
-    return tools;
+    return (r.tools as McpTool[]) ?? [];
   }
 
   /**
    * Call a tool. A tool-level failure (a refused scope, a bad argument the
    * tool caught, a non-zero exit) is a result with `isError: true`, not a
    * thrown error; protocol errors throw McpError.
-   *
-   * Use the `gaiadesk_exec` spelling (GAIADESK_TOOLS); `gaiadesk.exec` works
-   * too. The client sends the spelling the server advertises (it fetches the
-   * tool list once if listTools() has not been called), so the same name
-   * works with gaiadesk-cli 0.10.324+ and with older, dotted-name CLIs.
    */
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<McpToolResult> {
-    if (!this.toolNames && toolNameAlias(name) !== null) {
-      try {
-        await this.listTools();
-      } catch (e) {
-        if (!(e instanceof McpError)) throw e;
-        // No list (e.g. no credential): send the name as given.
-      }
-    }
-    const r = await this.request('tools/call', { name: resolveToolName(name, this.toolNames), arguments: args });
+    const r = await this.request('tools/call', { name, arguments: args });
     return { content: [], isError: false, ...r } as McpToolResult;
   }
 

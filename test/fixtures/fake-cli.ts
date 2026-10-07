@@ -4,21 +4,17 @@
 // Compiled to dist-test/fixtures/fake-cli.js and run with `node`.
 //
 // Two CLIs in one file:
-//   fake-cli.js       gaiadesk-cli 0.10.324+: `--version --json`, one error
-//                     envelope {"error": {kind, message, reason?, desk?}},
+//   fake-cli.js       gaiadesk-cli: `--version --json`, one error envelope
+//                     {"error": {kind, message, reason?, desk?}},
 //                     {"jobs"}/{"tokens"}/{"events"} objects, `exec
 //                     --json-stream`, `--cwd` (exec, run, shell), `--json`
 //                     on logs / mesh ip / disconnect / agent-connect, MCP
 //                     tools named gaiadesk_*.
-//   fake-cli-old.js   an older CLI (sets FAKE_CLI=old, then runs this file):
-//                     version as text, {"error": "<text>"} / {"refused"} /
-//                     exec's old kinds, bare arrays, no --json-stream or
-//                     --cwd (an unknown flag), text from logs / mesh ip /
-//                     disconnect / agent-connect, dotted MCP tool names.
+//   fake-cli-old.js   a CLI too old to answer `--version --json` (sets
+//                     FAKE_CLI=old, then runs this file): its version as
+//                     text, and `--cwd` is an unknown flag.
 // They are two paths, as two installed CLIs would be (the SDK caches what a
 // CLI supports per path).
-//
-// FAKE_TOOL_STYLE=underscore|dotted overrides the MCP tool spelling.
 //
 // Desk ids: 123456789 fine; 234567890 a second desk (offline in `devices`);
 // 345678901 this machine on the Mesh; offline-desk offline; refused-desk the
@@ -51,9 +47,9 @@ const afterDashes = (): string[] => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** A failure as this CLI prints it: the envelope (new) or `old` (an older CLI's shape), and the sentence on stderr. */
-function fail(kind: string, message: string, exit: number, old: Json, extra: { reason?: string; desk?: string } = {}): number {
-  if (has('--json')) out(OLD ? old : { error: { kind, message, ...extra } });
+/** A failure as the CLI prints it: the envelope, and the sentence on stderr. */
+function fail(kind: string, message: string, exit: number, extra: { reason?: string; desk?: string } = {}): number {
+  if (has('--json')) out({ error: { kind, message, ...extra } });
   err(`gaiadesk-cli: ${message}`);
   return exit;
 }
@@ -100,9 +96,9 @@ function execJson(desk: string | undefined, cmd: string[], stdin: string, exit =
   };
 }
 
-/** exec/shell when the command never ran: the new error object, or an older CLI's kind. */
+/** exec/shell when the command never ran: its error object. */
 function notRun(desk: string | undefined, kind: string, reason: string | undefined, message: string, exit: number, mode: 'json' | 'stream' | 'plain'): number {
-  const error = OLD ? { kind: reason ?? kind, message } : { kind, message, ...(reason ? { reason } : {}), desk };
+  const error = { kind, message, ...(reason ? { reason } : {}), desk };
   if (mode === 'stream') out({ event: 'error', exit, error });
   if (mode === 'json') out({ exit, remote_code: null, stdout: '', stderr: '', duration_ms: 3, desk, route: null, mode: null, shell: null, timed_out: false, error, notes: [], truncated: false });
   err(`gaiadesk-cli: ${message}`);
@@ -116,17 +112,12 @@ async function execLike(desk: string | undefined, cmd: string[], stdin: string, 
     err('gaiadesk-cli: something odd');
     return 255;
   }
-  if (desk === REFUSED) {
-    const message = 'this agent token does not have the `exec` scope';
-    if (!OLD) return notRun(desk, 'refused', undefined, message, 254, mode);
-    if (mode === 'json') out({ ...execJson(desk, cmd, ''), exit: 254, remote_code: -1, stdout: '', stderr: '', error: message });
-    return 254;
-  }
+  if (desk === REFUSED) return notRun(desk, 'refused', undefined, 'this agent token does not have the `exec` scope', 254, mode);
   if (cwd === '/missing') return notRun(desk, 'failed', undefined, 'no such directory on the desk: /missing', 1, mode);
   const line = cmd.join(' ');
   const code = /^exit (\d+)$/.test(line) ? Number(line.slice(5)) : line === 'sleep' ? 124 : 0;
   const timedOut = line === 'sleep';
-  const stoppedError = timedOut && !OLD ? { kind: 'failed', message: 'the command ran past --timeout and was stopped' } : null;
+  const stoppedError = timedOut ? { kind: 'failed', message: 'the command ran past --timeout and was stopped' } : null;
   if (mode === 'json') {
     const r = execJson(desk, cmd, stdin, code, cwd);
     if (timedOut) Object.assign(r, { timed_out: true, remote_code: null, error: stoppedError });
@@ -153,10 +144,8 @@ async function execLike(desk: string | undefined, cmd: string[], stdin: string, 
   return code;
 }
 
-const toolStyle = process.env.FAKE_TOOL_STYLE ?? (OLD ? 'dotted' : 'underscore');
-const tool = (name: string) => (toolStyle === 'dotted' ? `gaiadesk.${name}` : `gaiadesk_${name}`);
-/** A new CLI accepts both spellings in tools/call; an older one only its own. */
-const isTool = (sent: string, name: string) => sent === tool(name) || (!OLD && sent === `gaiadesk.${name}`);
+const tool = (name: string) => `gaiadesk_${name}`;
+const isTool = (sent: string, name: string) => sent === tool(name);
 
 async function mcp(): Promise<number> {
   let buf = '';
@@ -191,13 +180,10 @@ async function mcp(): Promise<number> {
   return 0;
 }
 
-/** An older CLI does not know these flags. */
+/** A CLI too old for `--cwd` does not know it. */
 function unknownFlag(): number | null {
-  if (!OLD) return null;
-  const textOnly = ['logs', 'disconnect', 'agent-connect'].includes(argv[0]) || (argv[0] === 'mesh' && argv[1] === 'ip');
-  const f = ['--json-stream', '--cwd', ...(textOnly ? ['--json'] : [])].find(has);
-  if (!f) return null;
-  err(`gaiadesk-cli: unknown flag ${f}`);
+  if (!OLD || !has('--cwd')) return null;
+  err('gaiadesk-cli: unknown flag --cwd');
   return 255;
 }
 
@@ -219,10 +205,9 @@ async function main(): Promise<number> {
           name: 'gaiadesk-cli',
           version: '0.10.324',
           features: [
-            'json_error_envelope', 'json_v1_shapes', 'exec_json_stream', 'exec_cwd', 'run_cwd', 'shell_cwd',
+            'json_error_envelope', 'exec_json_stream', 'exec_cwd', 'run_cwd', 'shell_cwd',
             'logs_json', 'mesh_ip_json', 'disconnect_json', 'agent_connect_json', 'mcp_lifecycle', 'mcp_underscore_tool_names',
           ],
-          json_shapes: ['v1', 'v2'],
           mcp_protocol_versions: ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'],
         });
         return 0;
@@ -250,7 +235,7 @@ async function main(): Promise<number> {
       const [src, dst] = pos;
       const remote = /^[\w-]+:/.test(src) ? src : dst;
       const d = remote.slice(0, remote.indexOf(':'));
-      if (d === REFUSED) return fail('refused', 'file transfer is turned off for you', 254, { refused: 'file transfer is turned off for you' }, { desk: d });
+      if (d === REFUSED) return fail('refused', 'file transfer is turned off for you', 254, { desk: d });
       if (d === PLAIN) {
         err(`gaiadesk-cli: desk ${d} is offline (last seen 2 h ago)`);
         return 255;
@@ -262,8 +247,7 @@ async function main(): Promise<number> {
     }
     case 'run':
       if (desk === REFUSED) {
-        const message = 'this agent token does not have the `jobs` scope';
-        return fail('refused', message, 254, { error: message }, { desk });
+        return fail('refused', 'this agent token does not have the `jobs` scope', 254, { desk });
       }
       out(job(flag('--name'), { command: afterDashes().join(' ') }));
       return 0;
@@ -273,47 +257,31 @@ async function main(): Promise<number> {
         return 0;
       }
       const jobs = [job('build'), job('old', { state: 'exited', exit_code: 0 })];
-      out(OLD ? jobs : { jobs });
+      out({ jobs });
       return 0;
     }
     case 'kill': {
       const name = argv[1];
-      if (name === 'nope') return fail('failed', 'no job named nope', 1, { error: 'no job named nope' }, { desk });
+      if (name === 'nope') return fail('failed', 'no job named nope', 1, { desk });
       out(job(name, { state: 'killed' }));
       return 0;
     }
     case 'logs':
-      if (has('--json')) {
-        if (argv[1] === 'nope') return fail('failed', 'no job named nope', 1, {}, { desk });
-        if (has('--follow')) {
-          for (const l of ['one', 'two', 'three']) {
-            out({ event: 'output', data: `${l}\n` });
-            await sleep(20);
-          }
-          if (argv[1] === 'lost') return fail('connection_lost', 'the connection to the desk was lost', 255, {}, { desk });
-          out({ event: 'end', job: job(argv[1], { state: 'exited', exit_code: 0 }) });
-          err(`job ${argv[1]} exited (exit 0)`);
-          return 0;
-        }
-        out({ job: job(argv[1]), output: flag('--tail') ? 'tail\n' : 'line1\nline2\n' });
-        return 0;
-      }
+      if (argv[1] === 'nope') return fail('failed', 'no job named nope', 1, { desk });
       if (has('--follow')) {
         for (const l of ['one', 'two', 'three']) {
-          out(l);
+          out({ event: 'output', data: `${l}\n` });
           await sleep(20);
         }
+        if (argv[1] === 'lost') return fail('connection_lost', 'the connection to the desk was lost', 255, { desk });
+        out({ event: 'end', job: job(argv[1], { state: 'exited', exit_code: 0 }) });
         err(`job ${argv[1]} exited (exit 0)`);
         return 0;
       }
-      if (argv[1] === 'nope') {
-        err('gaiadesk-cli: no job named nope');
-        return 1;
-      }
-      process.stdout.write(flag('--tail') ? 'tail\n' : 'line1\nline2\n');
+      out({ job: job(argv[1]), output: flag('--tail') ? 'tail\n' : 'line1\nline2\n' });
       return 0;
     case 'stats':
-      if (desk === PLAIN) return fail('unreachable', 'the desk did not answer', 255, { desk, error: 'the desk did not answer' }, { reason: 'timeout', desk });
+      if (desk === PLAIN) return fail('unreachable', 'the desk did not answer', 255, { reason: 'timeout', desk });
       out({ desk, hostname: 'office-pc', os: 'windows', os_version: 'Windows 11 Pro', cpu_percent: 37.5, cpus: 8, load: null, mem_total_mb: 16384, mem_free_mb: 4096, disks: [{ mount: 'C:\\', total_mb: 512000, free_mb: 64000 }], uptime_secs: 3600, jobs_running: 2 });
       return 0;
     case 'measure':
@@ -323,8 +291,7 @@ async function main(): Promise<number> {
       const sub = argv[1];
       const info = { label: 'bot', id: '9f3a1c2b7d004e11', scopes: ['exec', 'cp'], issued_at_ms: 1, expires_at_ms: 2, revoked: false };
       if (!process.env.GAIADESK_CODE) {
-        const message = "token administration needs the desk's unattended password";
-        return fail('refused', message, 254, { error: message }, { desk });
+        return fail('refused', "token administration needs the desk's unattended password", 254, { desk });
       }
       if (sub === 'create') {
         const desks = (flag('--desk') ?? '').split(',');
@@ -333,7 +300,7 @@ async function main(): Promise<number> {
         return 0;
       }
       if (sub === 'list') {
-        out(OLD ? [info] : { tokens: [info] });
+        out({ tokens: [info] });
         return 0;
       }
       if (sub === 'revoke') {
@@ -343,8 +310,7 @@ async function main(): Promise<number> {
         }
         const name = argv.slice(2).find((a, i, all) => !a.startsWith('-') && all[i - 1] !== '--desk');
         if (name === 'ghost') {
-          const message = 'there was no live token on the desk to revoke';
-          return fail('failed', message, 1, { revoked: '', stopped_sessions: 0 }, { desk });
+          return fail('failed', 'there was no live token on the desk to revoke', 1, { desk });
         }
         out({ revoked: has('--all-for-desk') ? 'bot' : name, stopped_sessions: 1 });
         return 0;
@@ -353,7 +319,7 @@ async function main(): Promise<number> {
     }
     case 'audit': {
       const events = [{ at_ms: 5, desk, token: 'bot', token_id: '9f3a', action: 'exec.end', detail: 'make test', bytes: 0, exit_code: 0, duration_ms: 900 }];
-      out(OLD ? events : { events });
+      out({ events });
       return 0;
     }
     case 'mesh':
@@ -365,11 +331,10 @@ async function main(): Promise<number> {
         out(has('--json') ? { desk_id: OK, mesh_ip: '100.64.0.2', renamed_to: null } : '100.64.0.2');
         return 0;
       }
-      return fail('failed', `desk ${argv[2]} is not on this machine's GaiaDesk Mesh`, 1, {}, { desk: argv[2] });
+      return fail('failed', `desk ${argv[2]} is not on this machine's GaiaDesk Mesh`, 1, { desk: argv[2] });
     case 'disconnect': {
       const closed = [desk ?? OK];
-      for (const d of closed) err(`gaiadesk-cli: closed the held connection to desk ${d}`);
-      if (has('--json')) out({ closed });
+      out({ closed });
       return 0;
     }
     case 'forward': {
@@ -395,10 +360,10 @@ async function main(): Promise<number> {
     }
     case 'agent-connect':
       if (!process.env.GAIADESK_AGENT_TOKEN) {
-        return fail('usage', 'an agent token is required (--token, or $GAIADESK_AGENT_TOKEN)', 255, {});
+        return fail('usage', 'an agent token is required (--token, or $GAIADESK_AGENT_TOKEN)', 255);
       }
-      if (desk === REFUSED) return fail('refused', 'the desk refused the agent session: no `screen` scope', 254, {}, { desk });
-      out(has('--json') ? { desk_id: desk, ok: true, screenshot: { width: 1280, height: 800 } } : `agent session open on desk ${desk}: screenshot 1280x800`);
+      if (desk === REFUSED) return fail('refused', 'the desk refused the agent session: no `screen` scope', 254, { desk });
+      out({ desk_id: desk, ok: true, screenshot: { width: 1280, height: 800 } });
       return 0;
     default:
       err(`gaiadesk-cli: unknown subcommand ${JSON.stringify(cmd)}`);

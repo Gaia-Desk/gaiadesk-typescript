@@ -1,8 +1,6 @@
 // The client against a fake gaiadesk-cli (test/fixtures/fake-cli.ts, compiled
-// next to this file): every behaviour both CLIs share is checked against a
-// 0.10.324+ CLI (fake-cli.js) AND an older one (fake-cli-old.js); what only
-// one of them has (--json-stream, --cwd, the envelope's desk) is checked on
-// its own below.
+// next to this file). fake-cli-old.js is a CLI too old to answer `--version
+// --json`: only the cwd tests use it, for the "update gaiadesk-cli" error.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
@@ -28,10 +26,6 @@ import type { GaiaDeskOptions, AccountRevokeResult, CpSummary } from '../dist/in
 
 const NEW_CLI = fileURLToPath(new URL('./fixtures/fake-cli.js', import.meta.url));
 const OLD_CLI = fileURLToPath(new URL('./fixtures/fake-cli-old.js', import.meta.url));
-const CLIS = [
-  ['0.10.324', NEW_CLI],
-  ['older', OLD_CLI],
-] as const;
 const OK = '123456789';
 const OTHER = '234567890';
 const OFFLINE = 'offline-desk';
@@ -56,26 +50,19 @@ function setup(opts: GaiaDeskOptions = {}, extraEnv: Record<string, string> = {}
   return { gd, calls, ops };
 }
 
-/** The same test against both CLIs. */
-function both(name: string, fn: (fake: string, cli: string) => Promise<void>) {
-  for (const [cli, fake] of CLIS) test(`${name} [${cli} CLI]`, () => fn(fake, cli));
-}
-
 // ───────────────────────────── version and features ─────────────────────────────
 
 test('version: the CLI text', async () => {
   assert.equal(await setup().gd.version(), 'gaiadesk-cli 0.10.324');
-  assert.equal(await setup({}, {}, OLD_CLI).gd.version(), 'gaiadesk-cli 0.10.300');
 });
 
-test('versionInfo: --version --json on a 0.10.324 CLI, null on an older one', async () => {
+test('versionInfo: --version --json; null for a CLI too old to answer it', async () => {
   const v = await setup().gd.versionInfo();
   assert.equal(v?.version, '0.10.324');
   assert.ok(v?.features.includes('exec_json_stream'));
-  assert.deepEqual(v?.json_shapes, ['v1', 'v2']);
+  assert.ok(v?.mcp_protocol_versions.includes('2025-06-18'));
   assert.ok((await setup().gd.features()).has('exec_cwd'));
   assert.equal(await setup({}, {}, OLD_CLI).gd.versionInfo(), null);
-  assert.equal((await setup({}, {}, OLD_CLI).gd.features()).size, 0);
 });
 
 test('features are asked once per CLI path', async () => {
@@ -124,8 +111,8 @@ test('an explicit code beats an inherited token file', async () => {
 
 // ───────────────────────────── exec / shell ─────────────────────────────
 
-both('exec: the CLI JSON, verbatim', async (fake) => {
-  const { gd, ops } = setup({}, {}, fake);
+test('exec: the CLI JSON, verbatim', async () => {
+  const { gd, ops } = setup();
   const r = await gd.exec(OK, 'hostname', { shell: 'sh', timeout: 10 });
   assert.equal(r.exit, 0);
   assert.equal(r.remote_code, 0);
@@ -137,46 +124,45 @@ both('exec: the CLI JSON, verbatim', async (fake) => {
   assert.deepEqual(ops()[0].argv, ['exec', '--desk-id', OK, '--quiet', '--json', '--no-stdin', '--shell', 'sh', '--timeout', '10', '--', 'hostname']);
 });
 
-both('exec: stdin is sent, then closed', async (fake) => {
-  const { gd, ops } = setup({}, {}, fake);
+test('exec: stdin is sent, then closed', async () => {
+  const { gd, ops } = setup();
   const r = await gd.exec(OK, ['wc', '-l'], { stdin: 'a\nb\n' });
   assert.match(r.stdout, /stdin: a\nb\n/);
   assert.ok(ops()[0].argv.includes('--stdin'));
 });
 
-both('exec: a non-zero exit or a timeout is a result; check:true makes it an error', async (fake, cli) => {
-  const { gd } = setup({}, {}, fake);
+test('exec: a non-zero exit or a timeout is a result; check:true makes it an error', async () => {
+  const { gd } = setup();
   const r = await gd.exec(OK, 'exit 3');
   assert.equal(r.exit, 3);
   await assert.rejects(gd.exec(OK, 'exit 3', { check: true }), (e) => e instanceof CommandError && (e.result as { exit: number }).exit === 3 && e.desk === OK);
   const t = await gd.exec(OK, 'sleep');
   assert.equal(t.timed_out, true);
   assert.equal(t.exit, 124);
-  if (cli === 'older') assert.equal(t.error, null);
-  else assert.deepEqual(t.error, { kind: 'failed', message: 'the command ran past --timeout and was stopped' });
+  assert.deepEqual(t.error, { kind: 'failed', message: 'the command ran past --timeout and was stopped' });
 });
 
-both('exec: failures before the command ran are typed by their kind', async (fake) => {
-  const { gd } = setup({}, {}, fake);
+test('exec: failures before the command ran are typed by their kind', async () => {
+  const { gd } = setup();
   await assert.rejects(gd.exec(OFFLINE, 'x'), (e) => e instanceof UnreachableError && e.kind === 'offline' && /offline/.test(e.message) && e.exitCode === 255 && e.desk === OFFLINE);
   await assert.rejects(gd.exec(USAGE, 'x'), (e) => e instanceof UsageError && e.kind === 'usage' && /no credential/.test(e.message));
   await assert.rejects(gd.exec(REFUSED, 'x'), (e) => e instanceof RefusedError && e.kind === 'refused' && /`exec` scope/.test(e.message) && e.exitCode === 254);
   await assert.rejects(gd.exec(PLAIN, 'x'), (e) => e instanceof GaiaDeskError && e.message === 'something odd');
 });
 
-test('exec on a 0.10.324 CLI: the reason is kept beside the kind', async () => {
+test('exec: the reason is kept beside the kind', async () => {
   await assert.rejects(setup().gd.exec(OFFLINE, 'x'), (e) => e instanceof UnreachableError && e.reason === 'offline' && (e.json as { error: { kind: string } }).error.kind === 'unreachable');
 });
 
-both('shell: the script goes on stdin, the result is exec-shaped', async (fake) => {
-  const { gd, ops } = setup({}, {}, fake);
+test('shell: the script goes on stdin, the result is exec-shaped', async () => {
+  const { gd, ops } = setup();
   const r = await gd.shell(OK, 'cd /tmp\nls\n', { shell: 'sh' });
   assert.equal(r.stdout, 'ran: script:cd /tmp\nls\n');
   assert.deepEqual(ops()[0].argv, ['shell', '--desk-id', OK, '--quiet', '--json', '--shell', 'sh']);
   assert.equal(ops()[0].stdin, 'cd /tmp\nls\n');
 });
 
-test('cwd: shell --cwd on a 0.10.324 CLI (shell and shellStream)', async () => {
+test('cwd: shell --cwd (shell and shellStream)', async () => {
   const { gd, ops } = setup();
   const r = await gd.shell(OK, 'make\n', { cwd: '/srv/app' });
   assert.equal(r.stdout, 'ran: script:make\nin: /srv/app\n');
@@ -188,7 +174,7 @@ test('cwd: shell --cwd on a 0.10.324 CLI (shell and shellStream)', async () => {
   assert.deepEqual(ops()[1].argv, ['shell', '--desk-id', OK, '--quiet', '--cwd', 'proj']);
 });
 
-test('cwd: shell on an older CLI is a UsageError naming shell_cwd, and nothing runs', async () => {
+test('cwd: shell on a CLI too old for it is a UsageError naming shell_cwd, and nothing runs', async () => {
   const { gd, ops } = setup({}, {}, OLD_CLI);
   await assert.rejects(gd.shell(OK, 'make', { cwd: '/srv/app' }), (e) => e instanceof UsageError && /shell_cwd/.test(e.message));
   await assert.rejects(gd.shellStream(OK, 'make', { cwd: '/srv/app' }).wait(), UsageError);
@@ -198,7 +184,7 @@ test('cwd: shell on an older CLI is a UsageError naming shell_cwd, and nothing r
 
 // ───────────────────────────── cwd ─────────────────────────────
 
-test('cwd: exec --cwd and run --cwd on a 0.10.324 CLI', async () => {
+test('cwd: exec --cwd and run --cwd', async () => {
   const { gd, ops } = setup();
   const r = await gd.exec(OK, 'make', { cwd: '/srv/app' });
   assert.equal(r.stdout, 'ran: make\nin: /srv/app\n');
@@ -211,9 +197,9 @@ test('cwd: a directory that is not there is an OperationFailedError (exit 1)', a
   await assert.rejects(setup().gd.exec(OK, 'make', { cwd: '/missing' }), (e) => e instanceof OperationFailedError && e.kind === 'failed' && e.exitCode === 1 && /no such directory/.test(e.message));
 });
 
-test('cwd: an older CLI is a clear UsageError, and nothing runs', async () => {
+test('cwd: a CLI too old for it is a UsageError saying to update, and nothing runs', async () => {
   const { gd, ops } = setup({}, {}, OLD_CLI);
-  await assert.rejects(gd.exec(OK, 'make', { cwd: '/srv/app' }), (e) => e instanceof UsageError && /0\.10\.324/.test(e.message) && /exec_cwd/.test(e.message));
+  await assert.rejects(gd.exec(OK, 'make', { cwd: '/srv/app' }), (e) => e instanceof UsageError && /Update gaiadesk-cli/.test(e.message) && /exec_cwd/.test(e.message));
   await assert.rejects(gd.runJob(OK, 'build', 'make', { cwd: '/srv/app' }), (e) => e instanceof UsageError && /run_cwd/.test(e.message));
   const s = gd.execStream(OK, 'make', { cwd: '/srv/app' });
   await assert.rejects(s.wait(), UsageError);
@@ -223,8 +209,6 @@ test('cwd: an older CLI is a clear UsageError, and nothing runs', async () => {
     }
   })(), UsageError, 'iteration throws it too');
   assert.deepEqual(ops(), [], 'no exec or run reached the CLI');
-  // Without cwd an older CLI works as before.
-  assert.equal((await gd.exec(OK, 'make')).exit, 0);
 });
 
 test('cwd: bad values are refused before anything runs', async () => {
@@ -237,8 +221,8 @@ test('cwd: bad values are refused before anything runs', async () => {
 
 // ───────────────────────────── streaming ─────────────────────────────
 
-both('execStream: chunks as they come, then the exit', async (fake) => {
-  const { gd } = setup({}, {}, fake);
+test('execStream: chunks as they come, then the exit', async () => {
+  const { gd } = setup();
   const s = gd.execStream(OK, 'exit 2');
   let out = '';
   let err = '';
@@ -252,8 +236,8 @@ both('execStream: chunks as they come, then the exit', async (fake) => {
   assert.equal(exit.exitCode, 2);
 });
 
-both('execStream with stdin kept open', async (fake) => {
-  const { gd } = setup({}, {}, fake);
+test('execStream with stdin kept open', async () => {
+  const { gd } = setup();
   const s = gd.execStream(OK, 'cat', { stdin: true });
   s.write('hello'); // before the CLI is known: queued
   s.end();
@@ -263,7 +247,7 @@ both('execStream with stdin kept open', async (fake) => {
   assert.equal((await s.wait()).exitCode, 0);
 });
 
-test('execStream on a 0.10.324 CLI runs exec --json-stream; the exit carries the result', async () => {
+test('execStream runs exec --json-stream; the exit carries the result', async () => {
   const { gd, ops } = setup();
   const s = gd.execStream(OK, 'exit 2', { cwd: '/srv' });
   let out = '';
@@ -280,7 +264,7 @@ test('execStream on a 0.10.324 CLI runs exec --json-stream; the exit carries the
   assert.deepEqual(s.argv, ops()[0].argv);
 });
 
-test('execStream on a 0.10.324 CLI: a command that never ran ends with its error', async () => {
+test('execStream: a command that never ran ends with its error', async () => {
   const s = setup().gd.execStream(OFFLINE, 'x');
   const chunks = [];
   for await (const c of s) chunks.push(c);
@@ -294,16 +278,8 @@ test('execStream on a 0.10.324 CLI: a command that never ran ends with its error
   assert.equal(t.error?.kind, 'failed');
 });
 
-test('execStream on an older CLI runs plain exec (no --json-stream)', async () => {
-  const { gd, ops } = setup({}, {}, OLD_CLI);
-  const exit = await gd.execStream(OK, 'x').wait();
-  assert.equal(exit.exitCode, 0);
-  assert.equal(exit.result, undefined);
-  assert.deepEqual(ops()[0].argv, ['exec', '--desk-id', OK, '--quiet', '--no-stdin', '--', 'x']);
-});
-
-both('followJobLogs streams (logs -f --json on a 0.10.324 CLI, its text before)', async (fake, cli) => {
-  const { gd, ops } = setup({}, {}, fake);
+test('followJobLogs streams (logs -f --json)', async () => {
+  const { gd, ops } = setup();
   const s = gd.followJobLogs(OK, 'build');
   let out = '';
   for await (const c of s.text()) if (c.stream === 'stdout') out += c.text;
@@ -311,11 +287,10 @@ both('followJobLogs streams (logs -f --json on a 0.10.324 CLI, its text before)'
   const exit = await s.wait();
   assert.equal(exit.stderrTail, 'job build exited (exit 0)');
   assert.equal(exit.error, undefined);
-  const json = cli === '0.10.324' ? ['--json'] : [];
-  assert.deepEqual(ops()[0].argv, ['logs', 'build', '--desk-id', OK, '--follow', ...json]);
+  assert.deepEqual(ops()[0].argv, ['logs', 'build', '--desk-id', OK, '--follow', '--json']);
 });
 
-test('followJobLogs on a 0.10.324 CLI: a failure is typed on wait()', async () => {
+test('followJobLogs: a failure is typed on wait()', async () => {
   const s = setup().gd.followJobLogs(OK, 'lost');
   let out = '';
   for await (const c of s.text()) if (c.stream === 'stdout') out += c.text;
@@ -327,8 +302,8 @@ test('followJobLogs on a 0.10.324 CLI: a failure is typed on wait()', async () =
 
 // ───────────────────────────── desk operations ─────────────────────────────
 
-both('devices and probe (exit 1 for an unreachable desk is still a result)', async (fake) => {
-  const { gd } = setup({}, {}, fake);
+test('devices and probe (exit 1 for an unreachable desk is still a result)', async () => {
+  const { gd } = setup();
   const all = await gd.devices();
   assert.equal(all.devices.length, 2);
   assert.equal(all.devices[0].reachable, null);
@@ -338,8 +313,8 @@ both('devices and probe (exit 1 for an unreachable desk is still a result)', asy
   assert.equal(one.probe?.route, 'LAN');
 });
 
-both('cp: upload / download summaries; failures and refusals are typed', async (fake, cli) => {
-  const { gd, ops } = setup({}, {}, fake);
+test('cp: upload / download summaries; failures and refusals are typed', async () => {
+  const { gd, ops } = setup();
   const up = await gd.upload('dist', OK, 'deploy/', { recursive: true });
   assert.equal(up.direction, 'upload');
   assert.equal(up.dirs, 1);
@@ -347,12 +322,12 @@ both('cp: upload / download summaries; failures and refusals are typed', async (
   const down = await gd.download(OK, 'logs/app.log', './app.log');
   assert.equal(down.direction, 'download');
   await assert.rejects(gd.upload('fail.txt', OK, 'x/'), (e) => e instanceof OperationFailedError && (e.json as CpSummary).failed.length === 1);
-  await assert.rejects(gd.upload('a', REFUSED, 'x/'), (e) => e instanceof RefusedError && /turned off/.test(e.message) && e.desk === (cli === 'older' ? null : REFUSED));
+  await assert.rejects(gd.upload('a', REFUSED, 'x/'), (e) => e instanceof RefusedError && /turned off/.test(e.message) && e.desk === REFUSED);
   await assert.rejects(gd.upload('a', PLAIN, 'x/'), (e) => e instanceof GaiaDeskError && /offline/.test(e.message) && e.exitCode === 255);
 });
 
-both('jobs: run, ps ({jobs} or a bare array), logs, kill', async (fake, cli) => {
-  const { gd, ops } = setup({}, {}, fake);
+test('jobs: run, ps, logs, kill', async () => {
+  const { gd, ops } = setup();
   const j = await gd.runJob(OK, 'build', ['make', '-j8'], { priority: 'low', cpu: 50 });
   assert.equal(j.name, 'build');
   assert.equal(j.state, 'running');
@@ -363,29 +338,29 @@ both('jobs: run, ps ({jobs} or a bare array), logs, kill', async (fake, cli) => 
   assert.equal(await gd.jobLogs(OK, 'build', { tail: 10 }), 'tail\n');
   await assert.rejects(gd.jobLogs(OK, 'nope'), (e) => e instanceof OperationFailedError && e.message === 'no job named nope');
   const logs = ops().filter((c) => c.argv[0] === 'logs').map((c) => c.argv.includes('--json'));
-  assert.deepEqual(logs, cli === '0.10.324' ? [true, true, true] : [false, false, false], 'logs --json only where the CLI lists logs_json');
+  assert.deepEqual(logs, [true, true, true]);
   assert.equal((await gd.killJob(OK, 'build')).state, 'killed');
   await assert.rejects(gd.killJob(OK, 'nope'), (e) => e instanceof OperationFailedError && e.kind === 'failed' && e.message === 'no job named nope');
 });
 
-both('stats and measure', async (fake, cli) => {
-  const { gd } = setup({}, {}, fake);
+test('stats and measure', async () => {
+  const { gd } = setup();
   const s = await gd.stats(OK);
   assert.equal(s.cpus, 8);
   assert.equal(s.desk, OK);
   await assert.rejects(gd.stats(PLAIN), (e) => {
     assert.ok(e instanceof GaiaDeskError && e.message === 'the desk did not answer');
-    if (cli !== 'older') assert.ok(e instanceof UnreachableError && e.kind === 'timeout' && e.reason === 'timeout' && e.desk === PLAIN);
+    assert.ok(e instanceof UnreachableError && e.kind === 'timeout' && e.reason === 'timeout' && e.desk === PLAIN);
     return true;
   });
   assert.equal((await gd.measure(OK, { count: 5 })).sent, 5);
   assert.equal((await gd.measure(REFUSED)).rtt_ms, null, 'no ping back: exit 1, still a result');
 });
 
-both('tokens: owner password via code; create, list ({tokens} or a bare array), revoke, audit', async (fake) => {
-  const { gd: anon } = setup({}, {}, fake);
+test('tokens: owner password via code; create, list, revoke, audit', async () => {
+  const { gd: anon } = setup();
   await assert.rejects(anon.listTokens(OK), (e) => e instanceof RefusedError && /unattended password/.test(e.message));
-  const { gd, calls } = setup({ code: 'owner-pw' }, {}, fake);
+  const { gd, calls } = setup({ code: 'owner-pw' });
   const made = await gd.createToken({ desks: [OK, OTHER], name: 'bot', scopes: ['exec', 'cp'] });
   assert.equal(made.tokens.length, 2);
   assert.match(made.tokens[0].secret ?? '', /^gdagt_/);
@@ -402,21 +377,20 @@ both('tokens: owner password via code; create, list ({tokens} or a bare array), 
   assert.equal((await gd.audit(OK, { token: 'bot' }))[0].action, 'exec.end');
 });
 
-both('mesh and disconnect (--json on a 0.10.324 CLI, text before)', async (fake, cli) => {
-  const { gd, ops } = setup({}, {}, fake);
+test('mesh and disconnect (--json)', async () => {
+  const { gd, ops } = setup();
   assert.equal((await gd.meshStatus()).peers[0].mesh_ip, '100.64.0.2');
   assert.equal(await gd.meshIp(OK), '100.64.0.2');
   await assert.rejects(gd.meshIp(OTHER), (e) => e instanceof OperationFailedError && /not on this machine's GaiaDesk Mesh/.test(e.message));
   assert.deepEqual(await gd.disconnect(OTHER), { closed: [OTHER] });
   assert.deepEqual(await gd.disconnect(), { closed: [OK] });
-  const json = cli === '0.10.324' ? ['--json'] : [];
   const argvs = ops().map((c) => c.argv);
-  assert.deepEqual(argvs[1], ['mesh', 'ip', OK, ...json]);
-  assert.deepEqual(argvs.slice(-2), [['disconnect', '--desk-id', OTHER, ...json], ['disconnect', '--all', ...json]]);
+  assert.deepEqual(argvs[1], ['mesh', 'ip', OK, '--json']);
+  assert.deepEqual(argvs.slice(-2), [['disconnect', '--desk-id', OTHER, '--json'], ['disconnect', '--all', '--json']]);
 });
 
-both('forward: resolves when listening, close() stops it', async (fake) => {
-  const { gd } = setup({}, {}, fake);
+test('forward: resolves when listening, close() stops it', async () => {
+  const { gd } = setup();
   const f = await gd.forward(OK, [{ remotePort: 5432, localPort: 15432 }, { remotePort: 80, remoteHost: 'db.lan' }]);
   assert.deepEqual(f.listening.map((l) => [l.local_port, l.remote_host, l.remote_port]), [[15432, '127.0.0.1', 5432], [40002, 'db.lan', 80]]);
   const exit = await f.close();
@@ -424,16 +398,15 @@ both('forward: resolves when listening, close() stops it', async (fake) => {
   await assert.rejects(gd.forward(REFUSED, { remotePort: 22 }), (e) => e instanceof RefusedError && /refused the forward/.test(e.message));
 });
 
-both('agentConnect needs an agent token', async (fake, cli) => {
-  const { gd: none } = setup({}, {}, fake);
+test('agentConnect needs an agent token', async () => {
+  const { gd: none } = setup();
   await assert.rejects(none.agentConnect(OK), (e) => e instanceof GaiaDeskError && /agent token is required/.test(e.message));
-  const { gd, ops } = setup({ agentToken: 'gdagt_x' }, {}, fake);
+  const { gd, ops } = setup({ agentToken: 'gdagt_x' });
   assert.equal(await gd.agentConnect(OK), `agent session open on desk ${OK}: screenshot 1280x800`);
-  const json = cli === '0.10.324' ? ['--json'] : [];
-  assert.deepEqual(ops().at(-1)?.argv, ['agent-connect', '--desk-id', OK, ...json]);
+  assert.deepEqual(ops().at(-1)?.argv, ['agent-connect', '--desk-id', OK, '--json']);
 });
 
-test('agentConnect on a 0.10.324 CLI: a refusal is a RefusedError', async () => {
+test('agentConnect: a refusal is a RefusedError', async () => {
   const { gd } = setup({ agentToken: 'gdagt_x' });
   await assert.rejects(gd.agentConnect(REFUSED), (e) => e instanceof RefusedError && /screen/.test(e.message));
 });
@@ -475,27 +448,4 @@ test('mcp: requests carry the 2026-07-28 _meta; tools and errors', async () => {
     await m.close();
   }
   await assert.rejects(m.listTools(), GaiaDeskError, 'a closed client refuses');
-});
-
-test('mcp: gaiadesk_* names reach an older, dotted-name CLI; dotted names reach a new one', async () => {
-  const { gd: old } = setup({}, {}, OLD_CLI);
-  const m = old.mcp();
-  try {
-    const r = await m.callTool('gaiadesk_exec', { desk_id: OK, command: 'hostname' });
-    assert.equal(toolText(r), 'exit 0');
-    assert.equal(r.called, 'gaiadesk.exec', 'sent as the server advertises it');
-    assert.deepEqual(toolImage(await m.callTool('gaiadesk_screenshot', { session_id: 'h' })), { mimeType: 'image/png', base64: 'iVBORw0K' });
-    await assert.rejects(m.callTool('gaiadesk_nope'), (e) => e instanceof McpError && e.code === -32602);
-  } finally {
-    await m.close();
-  }
-  const { gd } = setup();
-  const m2 = gd.mcp();
-  try {
-    const r = await m2.callTool('gaiadesk.exec', { desk_id: OK, command: 'hostname' });
-    assert.equal(r.called, 'gaiadesk_exec');
-    assert.equal(toolText(await m2.callTool('gaiadesk_exec', { desk_id: OK, command: 'hostname' })), 'exit 0');
-  } finally {
-    await m2.close();
-  }
 });

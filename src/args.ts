@@ -83,7 +83,7 @@ export function checkCwd(cwd: string): string {
  * for the desk's shell, verbatim; an array is separate arguments, which the
  * desk quotes for its shell (`--shell none`: run directly). `json`: `true`
  * for `--json` (one object at the end), `'stream'` for `--json-stream` (one
- * event per line as it runs, gaiadesk-cli 0.10.324+), `false` for neither.
+ * event per line as it runs), `false` for neither.
  */
 export function execArgs(
   deskId: string,
@@ -149,7 +149,7 @@ export interface JobOptions {
   mem?: number | string;
   /** true: --keep-awake; false: --no-keep-awake; undefined: the desk's default. */
   keepAwake?: boolean;
-  /** The directory the job starts in on the desk (`--cwd`; gaiadesk-cli 0.10.324+). */
+  /** The directory the job starts in on the desk (`--cwd`). */
   cwd?: string;
 }
 
@@ -177,11 +177,11 @@ export function runArgs(deskId: string, name: string, command: string | readonly
 export const psArgs = (deskId: string) => ['ps', '--desk-id', checkDesk(deskId), '--json'];
 export const killArgs = (deskId: string, name: string) => ['kill', checkJobName(name), '--desk-id', checkDesk(deskId), '--json'];
 
-/** `logs <job> --desk-id <id> [--follow] [--tail n] [--json]` (`--json`: gaiadesk-cli 0.10.324+, feature `logs_json`). */
-export function logsArgs(deskId: string, name: string, o: { tail?: number; follow?: boolean; json?: boolean }): string[] {
+/** `logs <job> --desk-id <id> [--follow] [--tail n] --json`. */
+export function logsArgs(deskId: string, name: string, o: { tail?: number; follow?: boolean }): string[] {
   const a = ['logs', checkJobName(name), '--desk-id', checkDesk(deskId)];
   if (o.follow) a.push('--follow');
-  if (o.json) a.push('--json');
+  a.push('--json');
   if (o.tail !== undefined) {
     if (!Number.isInteger(o.tail) || o.tail < 0) throw new UsageError('tail is a number of bytes', { kind: 'usage' });
     a.push('--tail', String(o.tail));
@@ -291,25 +291,20 @@ export function forwardArgs(deskId: string, specs: readonly ForwardSpec[]): stri
   return a;
 }
 
-/** `--json` on these: gaiadesk-cli 0.10.324+ (features `disconnect_json`, `agent_connect_json`, `mesh_ip_json`). */
-export function disconnectArgs(deskId?: string, json = false): string[] {
+export function disconnectArgs(deskId?: string): string[] {
   const a = deskId === undefined ? ['disconnect', '--all'] : ['disconnect', '--desk-id', checkDesk(deskId)];
-  if (json) a.push('--json');
+  a.push('--json');
   return a;
 }
 
-export function agentConnectArgs(deskId: string, server?: string, json = false): string[] {
+export function agentConnectArgs(deskId: string, server?: string): string[] {
   const a = ['agent-connect', '--desk-id', checkDesk(deskId)];
   if (server) a.push('--server', server);
-  if (json) a.push('--json');
+  a.push('--json');
   return a;
 }
 
-export function meshIpArgs(deskId: string, json = false): string[] {
-  const a = ['mesh', 'ip', checkDesk(deskId)];
-  if (json) a.push('--json');
-  return a;
-}
+export const meshIpArgs = (deskId: string) => ['mesh', 'ip', checkDesk(deskId), '--json'];
 
 export interface McpServerOptions {
   /** Where screen sessions are recorded (strongly recommended). */

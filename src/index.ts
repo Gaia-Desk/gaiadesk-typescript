@@ -5,7 +5,7 @@ export type { GaiaDeskOptions, CallOptions, ExecOptions, StreamExecOptions, Forw
 export { CliStream } from './proc.js';
 export type { Chunk, Exit, Completed, OutputStream } from './proc.js';
 export type { NativeModule, NativeClientLike, NativeClientOptions, NativeCallOptions, NativeOutputStream, NativeEvent, NativeForwardHandle, NativeScreenHandle } from './native.js';
-export { McpClient, McpError, MCP_PROTOCOL_VERSION, GAIADESK_TOOLS, toolText, toolImage, toolNameAlias, resolveToolName } from './mcp.js';
+export { McpClient, McpError, MCP_PROTOCOL_VERSION, GAIADESK_TOOLS, toolText, toolImage } from './mcp.js';
 export type { McpTool, McpToolResult, McpContent, GaiaDeskToolName } from './mcp.js';
 export {
   GaiaDeskError,

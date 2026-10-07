@@ -23,8 +23,6 @@ test('the public entry point exports the client, the errors and the MCP helpers'
     'locateCli',
     'toolText',
     'toolImage',
-    'toolNameAlias',
-    'resolveToolName',
     'errorEnvelope',
     'parseVersionInfo',
     'parseExecEvent',

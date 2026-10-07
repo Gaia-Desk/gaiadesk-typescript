@@ -1,14 +1,13 @@
 // Streams for execStream on gaiadesk-cli:
 //
-// - JsonExecStream: `exec --json-stream` (gaiadesk-cli 0.10.324+, feature
-//   `exec_json_stream`): one JSON event per line, turned back into the same
-//   stdout/stderr chunks a plain stream gives, with the run's end (`exit` or
-//   `error` event) on wait(). Also `logs --follow --json` (feature
-//   `logs_json`): its `output` events as stdout, `end` / `interrupted` as the
-//   end, and a failure's error envelope as wait()'s `error`.
+// - JsonExecStream: `exec --json-stream`: one JSON event per line, turned
+//   back into the same stdout/stderr chunks a plain stream gives, with the
+//   run's end (`exit` or `error` event) on wait(). Also `logs --follow
+//   --json`: its `output` events as stdout, `end` / `interrupted` as the end,
+//   and a failure's error envelope as wait()'s `error`.
 // - DeferredStream: an OutputStream whose real stream starts once something
-//   asynchronous is known (which CLI features there are). Writes and kills
-//   before then are queued.
+//   asynchronous is known (whether the CLI has the `cwd` feature). Writes and
+//   kills before then are queued.
 
 import type { Chunk, Exit, Invocation, OutputStream } from './proc.js';
 import { CliStream } from './proc.js';
@@ -49,7 +48,7 @@ export function exitFromEvent(process: Exit, last: ExecEvent | null): Exit {
   if (!last) return process;
   if (last.event === 'exit') {
     const { event: _event, ...rest } = last;
-    const error = execError(rest.error, rest.exit);
+    const error = execError(rest.error);
     const exit: Exit = {
       exitCode: process.exitCode ?? rest.exit,
       signal: process.signal,
@@ -60,7 +59,7 @@ export function exitFromEvent(process: Exit, last: ExecEvent | null): Exit {
     return exit;
   }
   if (last.event === 'error') {
-    const error = execError(last.error, last.exit) ?? undefined;
+    const error = execError(last.error) ?? undefined;
     return { exitCode: process.exitCode ?? last.exit, signal: process.signal, stderrTail: error?.message || process.stderrTail, error };
   }
   return process;

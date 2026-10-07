@@ -25,15 +25,15 @@ export type Shell = G.Shell;
 // ───────────────────────────── errors ─────────────────────────────
 
 /**
- * What went wrong, as gaiadesk-cli 0.10.324+ reports it: the object inside
+ * What went wrong, as gaiadesk-cli reports it: the object inside
  * `{"error": {...}}` (and exec's `error`). `kind` is one of six; `reason` is
  * the finer cause (`offline`, `unknown_desk`, `not_online`, `network`,
  * `not_signed_in`, `timeout`, `local`, ...).
  */
 export type CliError = G.Error;
-/** The six kinds gaiadesk-cli 0.10.324+ puts in an error. */
+/** The six kinds gaiadesk-cli puts in an error. */
 export type CliErrorKind = G.ErrorKind;
-/** `{"error": CliError}`: what every `--json` command prints when it fails (0.10.324+). */
+/** `{"error": CliError}`: what every `--json` command prints when it fails. */
 export type CliErrorEnvelope = G.ErrorEnvelope;
 
 // ───────────────────────────── exec ─────────────────────────────
@@ -43,8 +43,7 @@ export type CliErrorEnvelope = G.ErrorEnvelope;
  * duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}`.
  * `exit` is what gaiadesk-cli exits with (the command's code, 124 timed out,
  * 130 interrupted, 254 refused); `error` is null when the command ran and
- * ended on its own (an older CLI's text error is given as
- * `{kind: 'failed' | 'refused', message}`).
+ * ended on its own.
  */
 export type ExecResult = G.ExecResult;
 
@@ -78,7 +77,7 @@ export type CopyFailure = G.CopyFailure;
 /** A background job (`run --json`, `ps --json`, `kill --json`). */
 export type JobInfo = G.Job;
 export type JobLimits = G.JobLimits;
-/** `ps --json` (0.10.324+; older CLIs print the bare array, which the SDK accepts too). */
+/** `ps --json`. */
 export type JobList = G.JobList;
 /** `logs --json`: a job and the end of its output. */
 export type JobLogs = G.JobLogs;
@@ -95,7 +94,7 @@ export type MeasureResult = G.Measurement;
 
 /** An agent token as the desk describes it (`token list --json`, `token create --json`). */
 export type TokenInfo = G.TokenInfo;
-/** `token list --json` (0.10.324+; older CLIs print the bare array). */
+/** `token list --json`. */
 export type TokenList = G.TokenList;
 
 /** `token create --json` without `out`: one token per desk, each with its `secret` (shown once). */
@@ -114,7 +113,7 @@ export type AccountRevokeResult = G.AccountRevoked;
 
 /** One entry of a desk's agent audit log (`audit --json`). */
 export type AuditEvent = G.AuditEvent;
-/** `audit --json` (0.10.324+; older CLIs print the bare array). */
+/** `audit --json`. */
 export type AuditLog = G.AuditLog;
 
 // ───────────────────────────── mesh / forward / version ─────────────────────────────
@@ -131,7 +130,7 @@ export type AgentCheck = G.AgentCheck;
 export type ForwardListening = G.ForwardListening;
 
 /**
- * `gaiadesk-cli --version --json` (0.10.324+): its release, the `features`
+ * `gaiadesk-cli --version --json`: its release, the `features`
  * an SDK can check before using a flag or a shape (`exec_json_stream`,
  * `exec_cwd`, `run_cwd`, `json_error_envelope`, `mcp_lifecycle`, ...), and
  * the MCP protocol revisions its server speaks.

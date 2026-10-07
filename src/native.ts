@@ -1,10 +1,8 @@
 // The native backend: GaiaDesk's client library as a prebuilt binary
 // (`@gaiadesk/sdk-native`, an optional dependency), used instead of spawning
 // gaiadesk-cli when it is installed. Same public API, same result shapes (the
-// binary returns the CLI's --json objects: the 0.10.324+ shapes from
-// @gaiadesk/sdk-native 0.10.324, read here so older builds' shapes come out
-// the same) and the same error classes and kinds. This file is the only place
-// that knows the native package's surface.
+// binary returns the CLI's --json objects) and the same error classes and
+// kinds. This file is the only place that knows the native package's surface.
 
 import { createRequire } from 'node:module';
 
@@ -174,7 +172,7 @@ export class NativeStream implements OutputStream {
       for await (const ev of s) {
         if (ev.type === 'exit') {
           const code = typeof ev.result.exit === 'number' ? ev.result.exit : 0;
-          const error = execError(ev.result.error, ev.result.exit);
+          const error = execError(ev.result.error);
           exit = { exitCode: code, signal: null, stderrTail: error?.message || lastLine(this.tail) };
           if (this.argv[0] === 'exec' || this.argv[0] === 'shell') exit.result = { ...(ev.result as unknown as ExecExit), error };
           if (error) exit.error = error;
@@ -190,7 +188,7 @@ export class NativeStream implements OutputStream {
       const err = fromNative(e, this.argv[0]);
       const exit: Exit = { exitCode: err.exitCode, signal: null, stderrTail: err.message };
       const env = errorEnvelope(err.json);
-      if (env?.kind !== undefined) exit.error = execError({ kind: env.kind, message: env.message, reason: env.reason, desk: env.desk }, err.exitCode) ?? undefined;
+      if (env) exit.error = execError({ kind: env.kind, message: env.message, reason: env.reason, desk: env.desk }) ?? undefined;
       return exit;
     } finally {
       this.done = true;
@@ -286,7 +284,7 @@ export class NativeBackend {
   /** exec/shell: the result, or CommandError with `check` (as the CLI backend does). */
   async exec(op: 'exec' | 'shell', args: Record<string, unknown>, o: NativeCallOptions & { check?: boolean }): Promise<ExecResult> {
     const r = normalizeExecResult(await this.call<Record<string, unknown>>(op, args, o));
-    // A result that says the command never ran (an older build returned one) is an error, as on the CLI.
+    // A result that says the command never ran is an error, as on the CLI.
     if (neverRan(r) && r.error) {
       const e = r.error;
       throw errorForKind(e.kind, e.message, { kind: (e.reason && SDK_KINDS.has(e.reason) ? e.reason : e.kind) as ErrorKind, exitCode: r.exit, argv: [op], json: r, reason: e.reason ?? null, desk: e.desk ?? r.desk });
@@ -317,7 +315,7 @@ export class NativeBackend {
     const toExit = (r: Record<string, unknown>): Exit => ({
       exitCode: typeof r.exit === 'number' ? r.exit : 0,
       signal: null,
-      stderrTail: execError(r.error, r.exit)?.message ?? '',
+      stderrTail: execError(r.error)?.message ?? '',
     });
     const done = f.done.then(toExit);
     return { listening: f.listening, done, close: async () => toExit(await f.close()) };

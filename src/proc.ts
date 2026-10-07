@@ -126,8 +126,8 @@ export interface Exit {
   stderrTail: string;
   /**
    * How the command ended, without its output (execStream / shellStream when
-   * the backend reports it: gaiadesk-cli 0.10.324+ via `--json-stream`, and the
-   * native library). Absent from a plain stream and when the command never ran.
+   * the backend reports it: gaiadesk-cli via `--json-stream`, and the native
+   * library). Absent from a plain stream and when the command never ran.
    */
   result?: ExecExit;
   /** Why it never ran or was stopped (`{kind, message, reason?, desk?}`), when the backend said. */

@@ -14,7 +14,7 @@ import {
   UsageError,
 } from '../dist/index.js';
 
-test('errorEnvelope: the one envelope of gaiadesk-cli 0.10.324+', () => {
+test('errorEnvelope: the one envelope of gaiadesk-cli', () => {
   assert.deepEqual(errorEnvelope({ error: { kind: 'unreachable', message: 'desk is offline', reason: 'offline', desk: '123456789' } }), {
     kind: 'unreachable',
     message: 'desk is offline',
@@ -51,12 +51,8 @@ test('errorFromRun: the envelope kind decides the class, the reason the SDK kind
   assert.equal(noMessage.message, 'from stderr');
 });
 
-test('errorEnvelope: the shapes older CLIs print', () => {
-  assert.deepEqual(errorEnvelope({ error: { kind: 'offline', message: 'desk is offline' } }), { kind: 'offline', message: 'desk is offline' });
+test('errorEnvelope: a missing message is empty', () => {
   assert.deepEqual(errorEnvelope({ error: { kind: 'usage' } }), { kind: 'usage', message: '' });
-  assert.deepEqual(errorEnvelope({ error: 'no job named x' }), { message: 'no job named x' });
-  assert.deepEqual(errorEnvelope({ desk: '1', error: 'the desk did not answer' }), { message: 'the desk did not answer' });
-  assert.deepEqual(errorEnvelope({ refused: 'file transfer is turned off for you' }), { message: 'file transfer is turned off for you' });
 });
 
 test('errorEnvelope: results are not errors', () => {
@@ -67,6 +63,8 @@ test('errorEnvelope: results are not errors', () => {
     [{ name: 'job' }],
     { exit: 0, error: null, stdout: '' }, // exec success carries "error": null
     { error: '' },
+    { error: 'text is not an envelope' },
+    { refused: 'not an envelope either' },
     { desk: '1', ok: true, message: 'revoked' },
     { devices: [], sources: [], notes: [] },
   ]) {
@@ -76,7 +74,7 @@ test('errorEnvelope: results are not errors', () => {
 
 test('errorFromRun: a kind decides the class', () => {
   const run = { code: 255, stderr: '' };
-  const e = errorFromRun(run, ['exec'], { error: { kind: 'not_online', message: 'm' } });
+  const e = errorFromRun(run, ['exec'], { error: { kind: 'unreachable', message: 'm', reason: 'not_online' } });
   assert.ok(e instanceof UnreachableError);
   assert.equal(e.kind, 'not_online');
   assert.equal(e.exitCode, 255);
@@ -89,7 +87,7 @@ test('errorFromRun: a kind decides the class', () => {
 });
 
 test('errorFromRun: otherwise the exit code decides, with the best message', () => {
-  const refused = errorFromRun({ code: 254, stderr: '' }, [], { refused: 'turned off' });
+  const refused = errorFromRun({ code: 254, stderr: 'gaiadesk-cli: turned off\n' }, [], undefined);
   assert.ok(refused instanceof RefusedError);
   assert.equal(refused.message, 'turned off');
   const failed = errorFromRun({ code: 1, stderr: 'gaiadesk-cli: no job named x\n' }, [], undefined);

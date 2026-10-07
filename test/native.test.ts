@@ -26,8 +26,8 @@ import { LOST, OFFLINE, OK, REFUSED, USAGE, makeMock } from './fixtures/mock-nat
 const FAKE = fileURLToPath(new URL('./fixtures/fake-cli.js', import.meta.url));
 const BASE_ENV = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot };
 
-function nativeGd(opts: GaiaDeskOptions = {}, mock: { old?: boolean } = {}) {
-  const m = makeMock(mock);
+function nativeGd(opts: GaiaDeskOptions = {}) {
+  const m = makeMock();
   const gd = new GaiaDesk({ native: m.module, env: { ...BASE_ENV }, ...opts });
   return { gd, ...m };
 }
@@ -114,16 +114,6 @@ test('every other operation maps to its op', async () => {
   assert.equal(calls.filter((c) => c.op === 'disconnect').length, 2);
 });
 
-test('an older native build: bare lists and plain strings read the same', async () => {
-  const { gd } = nativeGd({}, { old: true });
-  assert.deepEqual((await gd.jobs(OK)).map((j) => j.name), ['build']);
-  assert.equal((await gd.listTokens(OK))[0].label, 'bot');
-  assert.equal((await gd.audit(OK))[0].action, 'exec.end');
-  assert.equal(await gd.jobLogs(OK, 'build'), 'line 1\nline 2\n');
-  assert.equal(await gd.meshIp(OK), '100.64.0.1');
-  await assert.rejects(gd.exec(OFFLINE, 'x'), (e: unknown) => e instanceof UnreachableError && e.kind === 'offline' && e.desk === null);
-});
-
 test('cwd: exec, streams and jobs pass it to the native library', async () => {
   const { gd, calls } = nativeGd();
   const r = await gd.exec(OK, 'make', { cwd: '/srv/app' });
@@ -162,8 +152,6 @@ test('streams: the exit carries the run result and error', async () => {
   assert.equal(t.result?.timed_out, true);
   assert.deepEqual(t.error, { kind: 'failed', message: 'the command ran past --timeout and was stopped' });
   assert.equal(t.stderrTail, 'the command ran past --timeout and was stopped');
-  const old = await nativeGd({}, { old: true }).gd.execStream(OK, 'sleep').wait();
-  assert.deepEqual(old.error, { kind: 'failed', message: 'timed out' }, "an older build's text error, in today's shape");
   const refused = await gd.execStream(REFUSED, 'x').wait();
   assert.equal(refused.error?.kind, 'refused');
 });
