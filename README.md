@@ -262,13 +262,13 @@ Every result is the CLI's JSON, with the CLI's field names (types in
 | `whoami()` | `whoami --json` | `{source, account}`: `source` is `app`, `login`, `token` or `none` (not signed in: a result, not an error) |
 | `devices({probe?, deskId?})` | `devices --json [--probe] [-d]` | `{devices[], sources[], notes[], identity}`; with `probe`, unreachable desks have `reachable: false` |
 | `probe(deskId)` | `devices --probe -d` | one device row with `probe` |
-| `exec(deskId, command, opts)` | `exec --json [--env K=V]...` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
+| `exec(deskId, command, opts)` | `exec --json [--env KEY]...` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
 | `execStream(deskId, command, opts)` | `exec --json-stream` | a stream of stdout/stderr chunks; `wait()` gives the exit code, the run's `result` and `error` |
 | `shell(deskId, script, opts)` | `shell --json [--cwd]`, script on stdin | as `exec` |
 | `shellStream(deskId, script?, opts)` | `shell [--cwd]` | stream; without a script, stdin stays open for `write()`/`end()` |
 | `upload(local, deskId, remote, {recursive})` | `cp --json <local> <desk>:<remote>` | `{direction, desk, destination, files, dirs, bytes, resumed_bytes, failed[], seconds}` |
 | `download(deskId, remote, local, {recursive})` | `cp --json <desk>:<remote> <local>` | as above |
-| `runJob(deskId, name, command, {priority, cpu, mem, keepAwake, cwd, shell, env})` | `run --detach --json [--shell] [--env K=V]...` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement, reason}` |
+| `runJob(deskId, name, command, {priority, cpu, mem, keepAwake, cwd, shell, env})` | `run --detach --json [--shell] [--env KEY]...` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement, reason}` |
 | `waitJob(deskId, name, {timeout?})` | `wait <job> --json [--timeout]` | `{job, timed_out}`: the job as it ended (its `exit_code` is a result, not an error), or, `timed_out`, as it stands, still running |
 | `jobs(deskId)` | `ps --json` | job[] (from `{"jobs": [...]}`) |
 | `jobLogs(deskId, name, {tail})` | `logs --json` | output text (the `output` of `{job, output}`) |
@@ -298,8 +298,14 @@ a CLI without the `exec_cwd` feature is a `UsageError`; a directory that is not
 there is an `OperationFailedError`, one outside a confined token's folder a
 `RefusedError`). `runJob` takes `cwd` too. `env` (`exec`, `execStream`,
 `runJob`): `{NAME: value}`, environment variables for the command, never
-logged by the desk; through gaiadesk-cli they are `--env` arguments of its
-process on this machine, the native library takes them in-process. A
+logged by the desk; through gaiadesk-cli each is a bare `--env KEY` and its
+value goes in that gaiadesk-cli process's own environment, so values never
+appear on this machine's command lines and keep newlines. The exception: a
+name that would change how gaiadesk-cli itself runs, `GAIADESK_*` (any
+case), `PATH`, `HOME`, `USERPROFILE`, `TMPDIR`, `TEMP`, `TMP`, `LANG`,
+`LC_ALL`, `SystemRoot`, `ComSpec` (any case on Windows), goes as
+`--env KEY=VALUE` on its command line instead. The native library takes
+them in-process. A
 program Windows Smart App Control / WDAC refused to start is
 `error.reason === 'blocked_by_os_policy'` in an exec result, and a job's
 `reason` (its `state` then says so in words).

@@ -100,13 +100,35 @@ export function checkEnv(env: Readonly<Record<string, string>>): Record<string, 
   return out;
 }
 
+/** Names that change how gaiadesk-cli itself runs: never set in its own environment. */
+export const CLI_OWN_ENV = ['PATH', 'HOME', 'USERPROFILE', 'TMPDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'SystemRoot', 'ComSpec'] as const;
+
 /**
- * `--env KEY=VALUE` per variable (exec, run). The values are in
- * gaiadesk-cli's argv on this machine; the native backend passes them in-process.
+ * A variable gaiadesk-cli must not get in its own environment (it would
+ * change how the CLI runs): `GAIADESK_*` in any case, and CLI_OWN_ENV (any
+ * case on Windows). Its value goes on argv as `--env KEY=VALUE` instead.
  */
-export function envFlags(env: Readonly<Record<string, string>> | undefined): string[] {
+export function envStaysOnArgv(name: string, platform: string = process.platform): boolean {
+  if (name.toUpperCase().startsWith('GAIADESK_')) return true;
+  if (platform === 'win32') return CLI_OWN_ENV.some((n) => n.toUpperCase() === name.toUpperCase());
+  return (CLI_OWN_ENV as readonly string[]).includes(name);
+}
+
+/**
+ * `--env KEY` per variable (exec, run): gaiadesk-cli takes the value from its
+ * own environment (cliEnv), so values stay off this machine's command lines
+ * and keep newlines. A name envStaysOnArgv is `--env KEY=VALUE`.
+ */
+export function envFlags(env: Readonly<Record<string, string>> | undefined, platform: string = process.platform): string[] {
   if (env === undefined) return [];
-  return Object.entries(checkEnv(env)).flatMap(([k, v]) => ['--env', `${k}=${v}`]);
+  return Object.entries(checkEnv(env)).flatMap(([k, v]) => ['--env', envStaysOnArgv(k, platform) ? `${k}=${v}` : k]);
+}
+
+/** The variables envFlags names bare: added to gaiadesk-cli's own environment for that run. */
+export function cliEnv(env: Readonly<Record<string, string>> | undefined, platform: string = process.platform): Record<string, string> | undefined {
+  if (env === undefined) return undefined;
+  const out = Object.fromEntries(Object.entries(checkEnv(env)).filter(([k]) => !envStaysOnArgv(k, platform)));
+  return Object.keys(out).length ? out : undefined;
 }
 
 /**

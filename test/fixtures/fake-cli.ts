@@ -69,7 +69,12 @@ function log(stdin: string) {
     const v = process.env[k];
     if (v !== undefined) env[k] = v;
   }
-  appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv, env, stdin }) + '\n');
+  // A bare `--env KEY` takes $KEY from this process's environment, as the real CLI does.
+  const passed_env: Record<string, string | null> = {};
+  argv.forEach((a, i) => {
+    if (i > 0 && argv[i - 1] === '--env' && !a.includes('=')) passed_env[a] = process.env[a] ?? null;
+  });
+  appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv, env, stdin, passed_env }) + '\n');
 }
 
 /** `whoami --json` and `devices --json`'s `identity`: an account token signs in, else nobody. */

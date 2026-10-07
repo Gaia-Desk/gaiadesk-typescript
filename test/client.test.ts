@@ -37,6 +37,8 @@ interface Call {
   argv: string[];
   env: Record<string, string>;
   stdin: string;
+  /** What each bare `--env KEY` found in the fake CLI's environment. */
+  passed_env: Record<string, string | null>;
 }
 
 function setup(opts: GaiaDeskOptions = {}, extraEnv: Record<string, string> = {}, fake: string = NEW_CLI) {
@@ -343,15 +345,34 @@ test('jobs: run, ps, logs, kill', async () => {
   await assert.rejects(gd.killJob(OK, 'nope'), (e) => e instanceof OperationFailedError && e.kind === 'failed' && e.message === 'no job named nope');
 });
 
-test('env and a job shell: --env / --shell in argv', async () => {
+test('env: a bare --env KEY, the value in gaiadesk-cli\'s environment, never on argv', async () => {
   const { gd, ops } = setup();
-  await gd.exec(OK, 'make', { env: { CI: '1' } });
-  assert.deepEqual(ops()[0].argv, ['exec', '--desk-id', OK, '--quiet', '--json', '--no-stdin', '--env', 'CI=1', '--', 'make']);
-  assert.equal((await gd.runJob(OK, 'build', 'make', { shell: 'bash', env: { JOBS: '8' } })).state, 'running');
-  assert.deepEqual(ops()[1].argv.slice(6, 10), ['--shell', 'bash', '--env', 'JOBS=8']);
-  const s = gd.execStream(OK, 'make', { env: { CI: '1' } });
+  const secret = 'hunter2\nsecond line';
+  await gd.exec(OK, 'make', { env: { CI: '1', SECRET: secret } });
+  assert.deepEqual(ops()[0].argv, ['exec', '--desk-id', OK, '--quiet', '--json', '--no-stdin', '--env', 'CI', '--env', 'SECRET', '--', 'make']);
+  assert.deepEqual(ops()[0].passed_env, { CI: '1', SECRET: secret }, 'the values reach gaiadesk-cli, newlines too');
+  assert.equal((await gd.runJob(OK, 'build', 'make', { shell: 'bash', env: { JOBS: '8', TOKEN: secret } })).state, 'running');
+  assert.deepEqual(ops()[1].argv.slice(6, 12), ['--shell', 'bash', '--env', 'JOBS', '--env', 'TOKEN']);
+  assert.deepEqual(ops()[1].passed_env, { JOBS: '8', TOKEN: secret });
+  const s = gd.execStream(OK, 'make', { env: { CI: '1', SECRET: secret } });
   assert.equal((await s.wait()).exitCode, 0);
-  assert.ok(ops()[2].argv.includes('CI=1'));
+  assert.deepEqual(ops()[2].passed_env, { CI: '1', SECRET: secret });
+  for (const c of ops()) assert.ok(!c.argv.some((a) => a.includes('hunter2') || a.endsWith('=1') || a.endsWith('=8')), c.argv.join(' '));
+  await gd.exec(OK, 'make');
+  assert.deepEqual(ops()[3].passed_env, {}, 'not leaked into a later run');
+  assert.equal(gd.environment().SECRET, undefined);
+});
+
+test('env: a name gaiadesk-cli itself reads stays --env KEY=VALUE, out of its environment', async () => {
+  const { gd, ops } = setup();
+  await gd.exec(OK, 'make', { env: { PATH: '/opt/bin', GAIADESK_SERVER: 'wss://x/ws', CI: '1' } });
+  assert.deepEqual(ops()[0].argv.slice(6, 12), ['--env', 'PATH=/opt/bin', '--env', 'GAIADESK_SERVER=wss://x/ws', '--env', 'CI']);
+  assert.deepEqual(ops()[0].passed_env, { CI: '1' });
+  assert.equal(ops()[0].env.GAIADESK_SERVER, undefined, "gaiadesk-cli's own server is not changed by a variable meant for the command");
+});
+
+test('runJob: shell none is refused before anything runs', async () => {
+  const { gd } = setup();
   await assert.rejects(gd.runJob(OK, 'build', 'make', { shell: 'none' as 'sh' }), UsageError);
 });
 

@@ -5,8 +5,11 @@
 - `waitJob(deskId, name, {timeout?})` (`wait <job> --json`, the native
   `job_wait`): blocks until the job ends; `{job, timed_out}`. The job's own
   non-zero exit code is a result, not an error.
-- `env` (`{NAME: value}`) on `exec`, `execStream` and `runJob` (`--env
-  KEY=VALUE`; the native library's `env`); `shell` on `runJob` (`sh`, `bash`,
+- `env` (`{NAME: value}`) on `exec`, `execStream` and `runJob` (a bare
+  `--env KEY`, the value in gaiadesk-cli's own environment, never on its
+  command line, newlines kept; `--env KEY=VALUE` only for names that would
+  change how the CLI itself runs: `GAIADESK_*`, `PATH`, `HOME`, ...; the
+  native library's `env`); `shell` on `runJob` (`sh`, `bash`,
   `zsh`, `cmd`, `pwsh`); `bash` and `zsh` for `exec` / `shell`.
 - `whoami()` (`whoami --json`, the native `whoami`): `{source, account}`;
   not signed in (`source: 'none'`) is a result, not an error. `devices()`

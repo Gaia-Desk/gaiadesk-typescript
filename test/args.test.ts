@@ -60,8 +60,10 @@ test('run --detach: caps and the command after --', () => {
 
 test('env: --env KEY=VALUE per variable (exec, run); names checked, values never in errors', () => {
   assert.deepEqual(A.execArgs('1', 'make', { env: { CI: '1', MSG: 'a b=c' }, shell: 'bash' }, true), [
-    'exec', '--desk-id', '1', '--quiet', '--json', '--no-stdin', '--shell', 'bash', '--env', 'CI=1', '--env', 'MSG=a b=c', '--', 'make',
-  ]);
+    'exec', '--desk-id', '1', '--quiet', '--json', '--no-stdin', '--shell', 'bash', '--env', 'CI', '--env', 'MSG', '--', 'make',
+  ], "names only: the values travel in gaiadesk-cli's environment");
+  assert.deepEqual(A.cliEnv({ CI: '1', MSG: 'a\nb' }), { CI: '1', MSG: 'a\nb' });
+  assert.equal(A.cliEnv(undefined), undefined);
   assert.deepEqual(A.execArgs('1', 'x', { env: {} }, true), A.execArgs('1', 'x', {}, true));
   for (const bad of [{ '': 'x' }, { 'A=B': 'x' }, { 'A B': 'x' }, { A: 1 as unknown as string }, { A: 'sec\0ret' }] as Record<string, string>[]) {
     assert.throws(() => A.execArgs('1', 'x', { env: bad }, true), (e) => e instanceof UsageError && !/sec/.test(e.message));
@@ -69,9 +71,20 @@ test('env: --env KEY=VALUE per variable (exec, run); names checked, values never
   assert.ok(A.execArgs('1', 'x', { shell: 'zsh' }, true).includes('zsh'));
 });
 
+test('env: names gaiadesk-cli itself reads stay --env KEY=VALUE, out of its environment', () => {
+  const env = { GAIADESK_TOKEN: 't', gaiadesk_x: 'y', PATH: '/opt/bin', HOME: '/h', LC_ALL: 'C', Path: 'p', CI: '1' };
+  assert.deepEqual(A.envFlags(env, 'darwin'), [
+    '--env', 'GAIADESK_TOKEN=t', '--env', 'gaiadesk_x=y', '--env', 'PATH=/opt/bin', '--env', 'HOME=/h', '--env', 'LC_ALL=C', '--env', 'Path', '--env', 'CI',
+  ]);
+  assert.deepEqual(A.cliEnv(env, 'darwin'), { Path: 'p', CI: '1' });
+  assert.deepEqual(A.cliEnv(env, 'win32'), { CI: '1' }, 'case-insensitive on Windows');
+  assert.ok(A.envFlags({ systemroot: 'x' }, 'win32').includes('systemroot=x'));
+  assert.equal(A.cliEnv({ SystemRoot: 'x', ComSpec: 'y', TMPDIR: 'z', TEMP: 'a', TMP: 'b', USERPROFILE: 'c', LANG: 'd' }, 'linux'), undefined);
+});
+
 test('run --shell / --env; wait; whoami', () => {
   assert.deepEqual(A.runArgs('1', 'b', 'make', { shell: 'pwsh', env: { CONFIG: 'Release' } }), [
-    'run', '--detach', '--name', 'b', '--desk-id', '1', '--shell', 'pwsh', '--env', 'CONFIG=Release', '--json', '--', 'make',
+    'run', '--detach', '--name', 'b', '--desk-id', '1', '--shell', 'pwsh', '--env', 'CONFIG', '--json', '--', 'make',
   ]);
   for (const bad of ['none', 'default', 'fish']) assert.throws(() => A.runArgs('1', 'b', 'make', { shell: bad as 'sh' }), UsageError);
   assert.deepEqual(A.waitArgs('1', 'build', {}), ['wait', 'build', '--desk-id', '1', '--json']);

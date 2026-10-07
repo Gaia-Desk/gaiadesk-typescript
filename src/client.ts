@@ -128,8 +128,10 @@ export interface ExecOptions extends A.RunShapeOptions, CallOptions {
   cwd?: string;
   /**
    * Environment variables for the command, `{NAME: value}` (`--env`; never
-   * logged by the desk). Through gaiadesk-cli they are `--env` arguments of
-   * its process on this machine; the native library takes them in-process.
+   * logged by the desk). Through gaiadesk-cli each is a bare `--env KEY` with
+   * the value in that process's own environment, never on its command line
+   * (a name the CLI itself reads, `GAIADESK_*`, `PATH`, `HOME`, ..., stays
+   * `--env KEY=VALUE`); the native library takes them in-process.
    * Not on the API transport (a UsageError, never dropped).
    */
   env?: Readonly<Record<string, string>>;
@@ -262,8 +264,9 @@ export class GaiaDesk {
     return env;
   }
 
-  private inv(args: readonly string[], input?: string | Uint8Array, signal?: AbortSignalLike): Invocation {
-    return { command: this.cli, args, env: this.environment(), cwd: this.opts.cwd, input, signal };
+  /** A gaiadesk-cli run; `extraEnv`: this run's own variables (a bare `--env KEY` reads them there). */
+  private inv(args: readonly string[], input?: string | Uint8Array, signal?: AbortSignalLike, extraEnv?: Record<string, string>): Invocation {
+    return { command: this.cli, args, env: { ...this.environment(), ...extraEnv }, cwd: this.opts.cwd, input, signal };
   }
 
   /** Run any gaiadesk-cli command and collect its output, exit code untouched. The escape hatch (always gaiadesk-cli). */
@@ -278,8 +281,8 @@ export class GaiaDesk {
   }
 
   /** Run a --json desk operation; `ok` lists the exit codes whose JSON is a result. */
-  private async op<T>(args: string[], ok: number[] = [0], c: CallOptions = {}, input?: string | Uint8Array): Promise<T> {
-    const done = await runCli(this.inv(args, input, c.signal));
+  private async op<T>(args: string[], ok: number[] = [0], c: CallOptions = {}, input?: string | Uint8Array, extraEnv?: Record<string, string>): Promise<T> {
+    const done = await runCli(this.inv(args, input, c.signal, extraEnv));
     const json = parseJson(done.stdout);
     if (done.code !== null && ok.includes(done.code) && json !== undefined && errorEnvelope(json) === null) return json as T;
     if (done.code === 0 && json === undefined) {
@@ -394,7 +397,7 @@ export class GaiaDesk {
     if (n) return n.exec('exec', N.exec(deskId, command, o), { input: o.stdin, signal: o.signal, check: o.check });
     const args = A.execArgs(deskId, command, { ...o, stdin: o.stdin !== undefined }, true);
     if (o.cwd !== undefined) await this.require('exec_cwd');
-    const done = await runCli(this.inv(args, o.stdin, o.signal));
+    const done = await runCli(this.inv(args, o.stdin, o.signal, A.cliEnv(o.env)));
     return this.execOutcome(done, args, o.check);
   }
 
@@ -413,7 +416,7 @@ export class GaiaDesk {
     const n = this.nat();
     if (n) return n.stream('exec', N.exec(deskId, command, o), { stdin: o.stdin, signal: o.signal });
     const args = A.execArgs(deskId, command, { ...o, stdin: o.stdin !== undefined }, 'stream');
-    const open = () => new JsonExecStream(this.inv(args, o.stdin === true ? undefined : o.stdin, o.signal), o.stdin === true);
+    const open = () => new JsonExecStream(this.inv(args, o.stdin === true ? undefined : o.stdin, o.signal, A.cliEnv(o.env)), o.stdin === true);
     if (o.cwd === undefined) return open();
     return new DeferredStream(args, this.require('exec_cwd').then(open));
   }
@@ -500,7 +503,7 @@ export class GaiaDesk {
     if (n) return n.call<JobInfo>('job_run', N.runJob(deskId, name, command, o), o);
     const args = A.runArgs(deskId, name, command, o);
     if (o.cwd !== undefined) await this.require('run_cwd');
-    return this.op<JobInfo>(args, [0], o);
+    return this.op<JobInfo>(args, [0], o, undefined, A.cliEnv(o.env));
   }
 
   /**
