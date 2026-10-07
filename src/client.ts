@@ -1,9 +1,13 @@
 // The GaiaDesk client: each method runs one gaiadesk-cli command with --json
 // and returns the CLI's own JSON, typed. When the native library (@gaiadesk/sdk-native, an optional dependency) is installed,
 // the same methods run on it instead: no gaiadesk-cli needed, same results,
-// same errors (see `backend`).
+// same errors (see `backend`). Given an `apiKey`, they go to GaiaDesk's
+// hosted HTTPS API instead (api.ts): same results and errors again, and the
+// operations the API does not serve are a UsageError.
 
 import * as A from './args.js';
+import { ApiTransport, notOverApi } from './api.js';
+import type { ApiCallOptions, FetchLike } from './api.js';
 import {
   CliNotFoundError,
   CommandError,
@@ -85,9 +89,29 @@ export interface GaiaDeskOptions {
   backend?: 'auto' | 'native' | 'cli';
   /** The native module to use instead of `require('@gaiadesk/sdk-native')` (tests, custom builds). */
   native?: NativeModule;
+  /**
+   * A GaiaDesk API key (`ak_…`) or a signed-in person's session token: use
+   * the `api` transport, GaiaDesk's hosted HTTPS API (only `fetch`; no
+   * gaiadesk-cli, no native library). The CLI options above do not apply then.
+   */
+  apiKey?: string;
+  /**
+   * API transport: a scoped agent token (`gdagt_…`) sent as
+   * `X-GaiaDesk-Desk-Token`. From an API key, desk operations need one (the
+   * desk verifies it); a person's own session works on their own desks without.
+   */
+  deskToken?: string;
+  /** API transport: the API's base URL. Default `https://api.gaiadesk.net/v1`. */
+  baseUrl?: string;
+  /** API transport: the `fetch` to use (default: the global one). */
+  fetch?: FetchLike;
 }
 
-export interface CallOptions {
+/**
+ * Per call. `signal` aborts it (on any transport); `deskToken` and `wake`
+ * apply to the API transport only.
+ */
+export interface CallOptions extends ApiCallOptions {
   signal?: AbortSignalLike;
 }
 
@@ -145,9 +169,26 @@ export class GaiaDesk {
   private readonly opts: GaiaDeskOptions;
   private cliCommand?: readonly string[];
   private nativeBackend?: NativeBackend | null;
+  private readonly apiT: ApiTransport | null;
 
   constructor(opts: GaiaDeskOptions = {}) {
     this.opts = { ...opts };
+    if (opts.apiKey === undefined) {
+      if (opts.deskToken !== undefined || opts.baseUrl !== undefined) {
+        throw new UsageError('deskToken and baseUrl are for the API transport: give apiKey too', { kind: 'usage' });
+      }
+      this.apiT = null;
+    } else {
+      if (opts.backend !== undefined || opts.cli !== undefined || opts.native !== undefined) {
+        throw new UsageError('apiKey selects the API transport; it cannot be combined with backend, cli or native', { kind: 'usage' });
+      }
+      this.apiT = new ApiTransport({ apiKey: opts.apiKey, deskToken: opts.deskToken, baseUrl: opts.baseUrl, fetch: opts.fetch });
+    }
+  }
+
+  /** On the API transport, the UsageError for an operation it does not serve. */
+  private cliOnly(what: string, hint?: string): void {
+    if (this.apiT) throw notOverApi(what, hint);
   }
 
   /** The native backend when this client uses it (decided once, on first use). */
@@ -175,8 +216,9 @@ export class GaiaDesk {
     }
   }
 
-  /** Which backend runs the operations: `native` (@gaiadesk/sdk-native) or `cli` (gaiadesk-cli). */
-  get backend(): 'native' | 'cli' {
+  /** Which backend runs the operations: `api` (the hosted API, given `apiKey`), `native` (@gaiadesk/sdk-native) or `cli` (gaiadesk-cli). */
+  get backend(): 'native' | 'cli' | 'api' {
+    if (this.apiT) return 'api';
     return this.nat() ? 'native' : 'cli';
   }
 
@@ -215,6 +257,7 @@ export class GaiaDesk {
 
   /** Run any gaiadesk-cli command and collect its output, exit code untouched. The escape hatch (always gaiadesk-cli). */
   raw(args: readonly string[], opts: CallOptions & { input?: string | Uint8Array } = {}): Promise<Completed> {
+    if (this.apiT) return Promise.reject(notOverApi('raw()'));
     return runCli(this.inv(args, opts.input, opts.signal));
   }
 
@@ -242,6 +285,7 @@ export class GaiaDesk {
    * to answer it. Asked once per CLI path in this process.
    */
   versionInfo(): Promise<VersionInfo | null> {
+    if (this.apiT) return Promise.reject(notOverApi('versionInfo()'));
     return cliVersionInfo(this.cli, () => runCli(this.inv(['--version', '--json'])));
   }
 
@@ -257,6 +301,7 @@ export class GaiaDesk {
 
   /** `gaiadesk-cli --version` (e.g. "gaiadesk-cli 0.10.324"); on the native backend "gaiadesk-native <version>". */
   async version(): Promise<string> {
+    this.cliOnly('version()');
     const n = this.nat();
     if (n) return `gaiadesk-native ${(await n.call<{ version: string }>('version')).version}`;
     const done = await runCli(this.inv(['--version']));
@@ -272,6 +317,7 @@ export class GaiaDesk {
    * exits 1 then, which is not an error here).
    */
   devices(o: { probe?: boolean; deskId?: string } & CallOptions = {}): Promise<DevicesResult> {
+    if (this.apiT) return this.apiT.devices(o);
     const n = this.nat();
     if (n) return n.call<DevicesResult>('devices', N.devices(o), o);
     return this.op<DevicesResult>(A.devicesArgs(o), [0, 1], o);
@@ -315,6 +361,7 @@ export class GaiaDesk {
    * error, unless `check: true`. Throws when the command never ran.
    */
   async exec(deskId: string, command: string | readonly string[], o: ExecOptions = {}): Promise<ExecResult> {
+    if (this.apiT) return this.apiT.exec(deskId, command, o);
     const n = this.nat();
     if (n) return n.exec('exec', N.exec(deskId, command, o), { input: o.stdin, signal: o.signal, check: o.check });
     const args = A.execArgs(deskId, command, { ...o, stdin: o.stdin !== undefined }, true);
@@ -331,6 +378,7 @@ export class GaiaDesk {
    * thrown by iteration and wait().
    */
   execStream(deskId: string, command: string | readonly string[], o: StreamExecOptions = {}): OutputStream {
+    if (this.apiT) return this.apiT.execStream(deskId, command, o);
     const n = this.nat();
     if (n) return n.stream('exec', N.exec(deskId, command, o), { stdin: o.stdin, signal: o.signal });
     const args = A.execArgs(deskId, command, { ...o, stdin: o.stdin !== undefined }, 'stream');
@@ -347,6 +395,7 @@ export class GaiaDesk {
    * the `shell_cwd` feature is a UsageError).
    */
   async shell(deskId: string, script: string, o: Omit<ExecOptions, 'stdin'> = {}): Promise<ExecResult> {
+    this.cliOnly('shell()', 'run the script with exec(), or use the CLI or native transport');
     const n = this.nat();
     if (n) return n.exec('shell', N.shell(deskId, script, o), { signal: o.signal, check: o.check });
     const args = A.shellArgs(deskId, o, true);
@@ -362,6 +411,7 @@ export class GaiaDesk {
    * `cwd` as for shell() (without `shell_cwd`: a UsageError from iteration and wait()).
    */
   shellStream(deskId: string, script?: string, o: A.RunShapeOptions & CallOptions & { cwd?: string } = {}): OutputStream {
+    this.cliOnly('shellStream()', 'use execStream(), or the CLI or native transport');
     const n = this.nat();
     if (n) return n.stream('shell', N.shellStream(deskId, o), { stdin: script ?? true, signal: o.signal });
     const args = A.shellArgs(deskId, o, false);
@@ -374,6 +424,7 @@ export class GaiaDesk {
 
   /** `cp --json <local> <desk>:<remote>`. Resumable; throws OperationFailedError (with the summary as `json`) if any file failed. */
   upload(local: string, deskId: string, remote: string, o: { recursive?: boolean } & CallOptions = {}): Promise<CpSummary> {
+    if (this.apiT) return this.apiT.upload(local, deskId, remote, o);
     const n = this.nat();
     if (n) return n.cp<CpSummary>('upload', N.cp('upload', deskId, local, remote, !!o.recursive), o);
     return this.op<CpSummary>(A.cpArgs('upload', deskId, local, remote, !!o.recursive), [0], o);
@@ -381,9 +432,22 @@ export class GaiaDesk {
 
   /** `cp --json <desk>:<remote> <local>`. */
   download(deskId: string, remote: string, local: string, o: { recursive?: boolean } & CallOptions = {}): Promise<CpSummary> {
+    if (this.apiT) return this.apiT.download(deskId, remote, local, o);
     const n = this.nat();
     if (n) return n.cp<CpSummary>('download', N.cp('download', deskId, local, remote, !!o.recursive), o);
     return this.op<CpSummary>(A.cpArgs('download', deskId, local, remote, !!o.recursive), [0], o);
+  }
+
+  /** API transport only: write `data` to `remote` on the desk (`PUT /desks/{id}/files`, at most 256 MB). */
+  uploadBytes(data: Uint8Array | string, deskId: string, remote: string, o: CallOptions = {}): Promise<CpSummary> {
+    if (!this.apiT) return Promise.reject(new UsageError('uploadBytes is for the API transport (give apiKey); use upload() with a local file', { kind: 'usage' }));
+    return this.apiT.uploadBytes(data, deskId, remote, o);
+  }
+
+  /** API transport only: the bytes of `remote` on the desk (`GET /desks/{id}/files`, at most 256 MB). */
+  downloadBytes(deskId: string, remote: string, o: CallOptions = {}): Promise<Uint8Array> {
+    if (!this.apiT) return Promise.reject(new UsageError('downloadBytes is for the API transport (give apiKey); use download() to a local file', { kind: 'usage' }));
+    return this.apiT.downloadBytes(deskId, remote, o);
   }
 
   // ───────────────────────────── jobs ─────────────────────────────
@@ -394,6 +458,7 @@ export class GaiaDesk {
    * feature (or the native library).
    */
   async runJob(deskId: string, name: string, command: string | readonly string[], o: A.JobOptions & CallOptions = {}): Promise<JobInfo> {
+    if (this.apiT) return this.apiT.runJob(deskId, name, command, o);
     const n = this.nat();
     if (n) return n.call<JobInfo>('job_run', N.runJob(deskId, name, command, o), o);
     const args = A.runArgs(deskId, name, command, o);
@@ -403,6 +468,7 @@ export class GaiaDesk {
 
   /** `ps --json`: the `jobs` of `{"jobs": [...]}`. */
   async jobs(deskId: string, c: CallOptions = {}): Promise<JobInfo[]> {
+    if (this.apiT) return this.apiT.jobs(deskId, c);
     const n = this.nat();
     if (n) return listOf<JobInfo>(await n.call('job_list', N.desk(deskId), c), 'jobs', ['job_list']);
     const args = A.psArgs(deskId);
@@ -411,6 +477,7 @@ export class GaiaDesk {
 
   /** `kill --json`: stop a job and everything it started. */
   killJob(deskId: string, name: string, c: CallOptions = {}): Promise<JobInfo> {
+    if (this.apiT) return this.apiT.killJob(deskId, name, c);
     const n = this.nat();
     if (n) return n.call<JobInfo>('job_kill', N.job(deskId, name), c);
     return this.op<JobInfo>(A.killArgs(deskId, name), [0], c);
@@ -418,6 +485,7 @@ export class GaiaDesk {
 
   /** `logs <job> --json`: the job's output so far, stdout and stderr together. */
   async jobLogs(deskId: string, name: string, o: { tail?: number } & CallOptions = {}): Promise<string> {
+    if (this.apiT) return this.apiT.jobLogs(deskId, name, o);
     const n = this.nat();
     if (n) return textOf(await n.call('job_logs', N.logs(deskId, name, o.tail), o), 'output');
     return textOf(await this.op<JobLogs>(A.logsArgs(deskId, name, { tail: o.tail }), [0], o), 'output');
@@ -428,6 +496,7 @@ export class GaiaDesk {
    * following (not the job). A failure's `{kind, message}` is on wait()'s `error`.
    */
   followJobLogs(deskId: string, name: string, o: { tail?: number } & CallOptions = {}): OutputStream {
+    if (this.apiT) return this.apiT.followJobLogs(deskId, name, o);
     const n = this.nat();
     if (n) return n.stream('job_follow', N.logs(deskId, name, o.tail), { signal: o.signal });
     return new JsonExecStream(this.inv(A.logsArgs(deskId, name, { tail: o.tail, follow: true }), undefined, o.signal), false, 'logs');
@@ -437,6 +506,7 @@ export class GaiaDesk {
 
   /** `stats --json`: CPU, load, memory, disks, uptime, running jobs. */
   stats(deskId: string, c: CallOptions = {}): Promise<DeskStats> {
+    if (this.apiT) return this.apiT.stats(deskId, c);
     const n = this.nat();
     if (n) return n.call<DeskStats>('stats', N.desk(deskId), c);
     return this.op<DeskStats>(A.statsArgs(deskId), [0], c);
@@ -444,6 +514,7 @@ export class GaiaDesk {
 
   /** `measure --json`: round trip and clock offset. `rtt_ms` is null if no ping came back (CLI exit 1). */
   measure(deskId: string, o: { count?: number } & CallOptions = {}): Promise<MeasureResult> {
+    if (this.apiT) return Promise.reject(notOverApi('measure()'));
     const n = this.nat();
     if (n) return n.call<MeasureResult>('measure', N.measure(deskId, o.count), o);
     return this.op<MeasureResult>(A.measureArgs(deskId, o.count), [0, 1], o);
@@ -461,6 +532,7 @@ export class GaiaDesk {
   createToken(o: A.TokenCreateOptions & { out?: undefined } & CallOptions): Promise<MintResult>;
   createToken(o: A.TokenCreateOptions & CallOptions): Promise<TokenCreateResult>;
   createToken(o: A.TokenCreateOptions & CallOptions): Promise<TokenCreateResult> {
+    if (this.apiT) return this.apiT.createToken(o);
     const n = this.nat();
     if (n) return n.call<TokenCreateResult>('token_mint', N.tokenCreate(o), o);
     return this.op<TokenCreateResult>(A.tokenCreateArgs(o), [0], o);
@@ -468,6 +540,7 @@ export class GaiaDesk {
 
   /** `token list --json` (owner only): the `tokens` of `{"tokens": [...]}`. */
   async listTokens(deskId: string, c: CallOptions = {}): Promise<TokenInfo[]> {
+    if (this.apiT) return this.apiT.listTokens(deskId, c);
     const n = this.nat();
     if (n) return listOf<TokenInfo>(await n.call('token_list', N.desk(deskId), c), 'tokens', ['token_list']);
     const args = A.tokenListArgs(deskId);
@@ -480,6 +553,7 @@ export class GaiaDesk {
    * account (no desk password) and returns `{desk, ok, message}`.
    */
   revokeToken(deskId: string, which: string | { all: true }, o: { account?: boolean } & CallOptions = {}): Promise<TokenRevokeResult | AccountRevokeResult> {
+    if (this.apiT) return this.apiT.revokeToken(deskId, which, o);
     const n = this.nat();
     if (n) return n.call<TokenRevokeResult | AccountRevokeResult>('token_revoke', N.tokenRevoke(deskId, which, !!o.account), o);
     return this.op<TokenRevokeResult | AccountRevokeResult>(A.tokenRevokeArgs(deskId, which, !!o.account), [0], o);
@@ -487,6 +561,7 @@ export class GaiaDesk {
 
   /** `audit --json`: what agent tokens did on the desk, newest first (the `events` of `{"events": [...]}`). */
   async audit(deskId: string, o: { token?: string; limit?: number; account?: boolean } & CallOptions = {}): Promise<AuditEvent[]> {
+    this.cliOnly('audit()', "the API's /audit is the account's trail, not the desk's agent audit; use the CLI or native transport");
     const n = this.nat();
     if (n) return listOf<AuditEvent>(await n.call('audit', N.audit(deskId, o), o), 'events', ['audit']);
     const args = A.auditArgs(deskId, o);
@@ -497,6 +572,7 @@ export class GaiaDesk {
 
   /** `mesh status --json`. */
   meshStatus(c: CallOptions = {}): Promise<MeshStatus> {
+    if (this.apiT) return Promise.reject(notOverApi('meshStatus()'));
     const n = this.nat();
     if (n) return n.call<MeshStatus>('mesh_status', {}, c);
     return this.op<MeshStatus>(['mesh', 'status', '--json'], [0], c);
@@ -504,6 +580,7 @@ export class GaiaDesk {
 
   /** `mesh ip <desk> --json`: the desk's Mesh address. */
   async meshIp(deskId: string, c: CallOptions = {}): Promise<string> {
+    this.cliOnly('meshIp()');
     const n = this.nat();
     if (n) return textOf(await n.call('mesh_ip', N.desk(deskId), c), 'mesh_ip');
     return textOf(await this.op<MeshIp>(A.meshIpArgs(deskId), [0], c), 'mesh_ip');
@@ -511,6 +588,7 @@ export class GaiaDesk {
 
   /** `disconnect --json`: close the held connection to one desk, or to all (no argument): `{closed: [desk ids]}`. */
   disconnect(deskId?: string, c: CallOptions = {}): Promise<Disconnected> {
+    if (this.apiT) return Promise.reject(notOverApi('disconnect()'));
     const n = this.nat();
     if (n) return n.call<Disconnected>('disconnect', N.disconnect(deskId), c);
     return this.op<Disconnected>(A.disconnectArgs(deskId), [0], c);
@@ -523,6 +601,7 @@ export class GaiaDesk {
    * a port on (or near) the desk. Resolves once every forward is listening.
    */
   async forward(deskId: string, specs: A.ForwardSpec | readonly A.ForwardSpec[], c: CallOptions = {}): Promise<Forward> {
+    this.cliOnly('forward()');
     const list = Array.isArray(specs) ? (specs as readonly A.ForwardSpec[]) : [specs as A.ForwardSpec];
     const n = this.nat();
     if (n) {
@@ -581,6 +660,7 @@ export class GaiaDesk {
    * on desk N: screenshot 1280x800"; a refusal is typed by the error envelope.
    */
   async agentConnect(deskId: string, c: CallOptions = {}): Promise<string> {
+    this.cliOnly('agentConnect()');
     const n = this.nat();
     if (n) return n.agentConnect(A.checkDesk(deskId), c.signal);
     const r = await this.op<AgentCheck>(A.agentConnectArgs(deskId, this.opts.server), [0], c);
@@ -593,6 +673,7 @@ export class GaiaDesk {
    * gaiadesk_click, ...) from code. Desk tools there use tokenFile/code; screen tools need agentToken.
    */
   mcp(o: A.McpServerOptions = {}): McpClient {
+    this.cliOnly('mcp()');
     return new McpClient(this.inv(A.mcpArgs(o, this.opts.server)));
   }
 }

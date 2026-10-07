@@ -50,6 +50,12 @@ export interface ErrorDetails {
   argv?: readonly string[];
   /** The parsed --json output, when there was one. */
   json?: unknown;
+  /** API transport: the request's id (`req_…`) from the error envelope, to quote to support. */
+  requestId?: string | null;
+  /** API transport: the HTTP status of the failed request. */
+  status?: number | null;
+  /** API transport: seconds to wait before retrying (a 429's `Retry-After`). */
+  retryAfter?: number | null;
 }
 
 export class GaiaDeskError extends Error {
@@ -62,6 +68,12 @@ export class GaiaDeskError extends Error {
   readonly reason: string | null;
   /** The desk the error concerned, when the CLI or native library said; else null. */
   readonly desk: string | null;
+  /** API transport: the request id (`req_…`) of the failed request; else null. */
+  readonly requestId: string | null;
+  /** API transport: the HTTP status of the failed request; else null. */
+  readonly status: number | null;
+  /** API transport: seconds to wait before retrying (429 `Retry-After`); else null. */
+  readonly retryAfter: number | null;
 
   constructor(message: string, details: ErrorDetails = {}) {
     super(message);
@@ -73,6 +85,9 @@ export class GaiaDeskError extends Error {
     this.stderr = details.stderr ?? '';
     this.argv = details.argv ?? [];
     this.json = details.json;
+    this.requestId = details.requestId ?? null;
+    this.status = details.status ?? null;
+    this.retryAfter = details.retryAfter ?? null;
   }
 }
 

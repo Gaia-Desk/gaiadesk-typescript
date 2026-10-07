@@ -20,7 +20,10 @@ through MCP.
   GaiaDesk app and parses the JSON it prints with `--json`.
 
 Both return the same results (the CLI's JSON shapes and field names) and
-throw the same error classes with the same `kind`s. This package contains no
+throw the same error classes with the same `kind`s. A third transport,
+**API** (give an `apiKey`), drives desks through GaiaDesk's hosted HTTPS
+API with nothing installed but this package: see
+[API transport](#api-transport). This package contains no
 GaiaDesk code; GaiaDesk itself is closed-source, and the native binary ships
 under its own licence (see [Backends](#backends)). Where the CLI has no JSON
 output, the SDK says so instead of guessing (see [Known gaps](#known-gaps)).
@@ -39,6 +42,7 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 
 - [Install](#install)
 - [Backends](#backends)
+- [API transport](#api-transport)
 - [Quickstart](#quickstart)
 - [Credentials](#credentials)
 - [API](#api)
@@ -73,7 +77,8 @@ the `cli` option to point at it.
 
 ## Backends
 
-`gd.backend` says which one a client uses: `'native'` or `'cli'`.
+`gd.backend` says which one a client uses: `'native'` or `'cli'` (or
+`'api'`, given an `apiKey`: see [API transport](#api-transport)).
 
 | Option | Effect |
 |---|---|
@@ -89,6 +94,78 @@ streams' `argv` is the operation's name, `kill()` stops the remote side
 whatever the signal, and an error's `exitCode` is the one `gaiadesk-cli`
 would have exited with. `@gaiadesk/sdk-native` is proprietary (free to use
 with GaiaDesk; see its LICENSE); this SDK stays MIT.
+
+## API transport
+
+Given an `apiKey`, the client talks to GaiaDesk's hosted API
+(`https://api.gaiadesk.net/v1`) over HTTPS with the global `fetch` only: no
+`gaiadesk-cli`, no native binary, no runtime dependency (Node 18+). Without
+`apiKey`, nothing changes: the client picks the native or CLI backend
+exactly as before.
+
+```ts
+import { GaiaDesk } from '@gaiadesk/sdk';
+
+const gd = new GaiaDesk({
+  apiKey: process.env.GAIADESK_API_KEY!,        // an API key (ak_…), or a signed-in person's session token
+  deskToken: process.env.GAIADESK_DESK_TOKEN,   // a scoped agent token (gdagt_…), verified by the desk
+  // baseUrl: 'https://api.gaiadesk.net/v1',    // the default
+});
+gd.backend; // 'api'
+const r = await gd.exec('123456789', 'hostname');
+```
+
+**Credentials.** Every request carries `Authorization: Bearer <apiKey>` and,
+when set, `X-GaiaDesk-Desk-Token: <deskToken>`. From an API key, desk
+operations need a scoped agent token (`gdagt_…`, minted with
+`createToken` or `gaiadesk-cli token create`) in `deskToken`: the API relays
+it to the desk, which verifies it. A signed-in person's own session works on
+their own desks without one. **Token administration** (`createToken`,
+`listTokens`, `revokeToken`) over the API works only for a signed-in
+person's own desk, never from an API key. Per call, `deskToken` overrides
+the client's, and `wake: <0-120>` rings a sleeping desk and waits that many
+seconds (`wake_s`).
+
+What it serves, with the same results and errors as the CLI transport:
+
+| Method | API |
+|---|---|
+| `devices({deskId?})` | `GET /desks` (`{devices, sources, notes}`; `deskId` filters it) |
+| `exec(deskId, command, opts)` | `POST /desks/{id}/exec` (an `ExecSpec`: `command` or `argv`, `shell`, `cwd`, `stdin`, `timeout_secs`) |
+| `execStream(deskId, command, opts)` | `POST /desks/{id}/exec?stream=1` (Server-Sent Events of `ExecEvent`s) |
+| `runJob`, `jobs`, `killJob` | `POST` / `GET /desks/{id}/jobs`, `DELETE /desks/{id}/jobs/{name}` |
+| `jobLogs(deskId, name, {tail})` | `GET /desks/{id}/jobs/{name}/logs?tail=` |
+| `followJobLogs(deskId, name)` | `GET …/logs?follow=1` (Server-Sent Events of `JobLogEvent`s) |
+| `stats(deskId)` | `GET /desks/{id}/stats` |
+| `upload(local, deskId, remote)` | `PUT /desks/{id}/files?path=` with the file's bytes (a `remote` ending in `/` keeps the file name) |
+| `download(deskId, remote, local)` | `GET /desks/{id}/files?path=` into `local` (a folder keeps the remote name) |
+| `uploadBytes(data, deskId, remote)` / `downloadBytes(deskId, remote)` | the same, with bytes in memory (API transport only; no file system needed) |
+| `createToken({desks, name, expires, scopes, cwd, lowPriv})` | `POST /desks/{id}/tokens` (a `MintSpec`), once per desk |
+| `listTokens(deskId)` / `revokeToken(deskId, id)` | `GET /desks/{id}/tokens` / `DELETE /desks/{id}/tokens/{token_id}` |
+
+- **Files** are single files of at most **256 MB** each way; copy folders
+  and larger files through the CLI or native transport. `upload`/`download`
+  read and write local files through `node:fs` (imported only when called).
+- **Streaming**: `execStream` and `followJobLogs` return the same stream as
+  on the CLI (chunks, then `wait()` with `exitCode`, `result`, `error`);
+  `kill()` closes the request. stdin is given up front (`stdin` text);
+  `stdin: true` (writing as it runs) is not available.
+- **Errors** are the same classes and kinds, from the API's error envelope
+  (`{"error": {kind, message, reason?, desk?, request_id}}`); the error also
+  has `status` (HTTP), `requestId` (quote it to support) and `retryAfter`
+  (seconds, on a 429). No connection is `UnreachableError` with kind
+  `network`; an answer that is not the envelope is a `ProtocolError`.
+- `timeout` becomes `timeout_secs`; `connectTimeout`, `persist` and
+  `verbose` do not apply. `createToken` needs a `name` over the API (and
+  defaults `expires` to 7 days, `scopes` to exec, cp, jobs).
+
+**Not available over the API** (a `UsageError`, kind `usage`, saying "not
+available over the API transport; use the CLI or native transport"):
+`shell`, `shellStream`, `forward`, `agentConnect`, `mcp`, `measure`,
+`meshStatus`, `meshIp`, `disconnect`, `audit`, `probe` /
+`devices({probe: true})`, recursive copies, `createToken({out})`,
+`revokeToken({all: true})` / `{account: true}`, `execStream` with
+`stdin: true`, and the CLI's own `version`, `versionInfo`, `features`, `raw`.
 
 ## Quickstart
 
@@ -342,7 +419,11 @@ the JSON shapes the real CLI documents and records the argv and environment
 it was given (`fake-cli-old.js` plays a CLI too old to answer `--version
 --json`, for the `cwd` checks).
 [`test/fixtures/mock-native.ts`](test/fixtures/mock-native.ts) stands in for
-`@gaiadesk/sdk-native`.
+`@gaiadesk/sdk-native`, and
+[`test/fixtures/mock-api.ts`](test/fixtures/mock-api.ts) for the hosted API
+(a `node:http` server that answers every route from the same fake CLI).
+[`test/transports.test.ts`](test/transports.test.ts) runs the same
+behavioural cases against the CLI and the API transport.
 
 [`src/types.generated.ts`](src/types.generated.ts) is generated from
 GaiaDesk's JSON Schema of the CLI's `--json` shapes (`gaiadesk-cli schema

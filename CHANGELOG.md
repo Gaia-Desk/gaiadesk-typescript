@@ -2,6 +2,18 @@
 
 ## Unreleased: gaiadesk-cli 0.10.324
 
+- **API transport.** `new GaiaDesk({ apiKey, deskToken?, baseUrl? })` drives
+  desks through GaiaDesk's hosted API (`https://api.gaiadesk.net/v1`) with
+  the global `fetch` only: no gaiadesk-cli, no native binary. Same method
+  names, result shapes and error classes/kinds for what the API serves
+  (`devices`, `exec`, `execStream` over SSE, `runJob`, `jobs`, `killJob`,
+  `jobLogs`, `followJobLogs` over SSE, `stats`, single-file `upload` /
+  `download` up to 256 MB, `createToken`, `listTokens`, `revokeToken`), plus
+  `uploadBytes` / `downloadBytes`; everything else is a `UsageError` saying
+  it is not available over the API transport. Per call, `deskToken` and
+  `wake` (`wake_s`). Errors gain `status`, `requestId` and `retryAfter`
+  (null on the other backends). `backend` is `'api'` for such a client.
+  Constructing without `apiKey` behaves exactly as before.
 - `@gaiadesk/cli` (the `gaiadesk-cli` command line, prebuilt per platform) is
   an optional dependency, and `locateCli` tries its binary right after
   `$GAIADESK_CLI`, before `PATH`: `npm install @gaiadesk/sdk` works with
