@@ -320,8 +320,11 @@ export class ApiTransport {
    * `GET /desks/{id}/jobs/{name}/wait`: `{job, timed_out}` once the job is no
    * longer running, as `gaiadesk-cli wait --json`. The API holds one wait at
    * most {@link API_WAIT_MAX} seconds, so a longer (or no) `timeout` waits
-   * again until the job ends or the time is up. A held answer's body may
-   * start with keep-alive spaces, and may be the error envelope.
+   * again until the job ends or the time is up. A held answer
+   * (`GaiaDesk-Held: 1`, its 200 sent before the outcome) starts with
+   * keep-alive spaces and is oneOf the result or the error envelope (with
+   * `error.status`, the status it would have had): the envelope is thrown as
+   * its typed error, whatever the 200.
    */
   async waitJob(deskId: string, name: string, o: { timeout?: number | string } & ApiCallOptions): Promise<JobWaitResult> {
     A.waitArgs(deskId, name, o); // the same UsageErrors as the CLI transport

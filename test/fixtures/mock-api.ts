@@ -283,14 +283,20 @@ async function handle(res: ServerResponse, rec: Recorded): Promise<void> {
     const j = parse(ran.stdout);
     if (!isObj(j) || isObj(j.error)) return relay(res, ran);
     const result = { job: j, timed_out: ran.code === 124 && j.state === 'running' };
-    // A held answer: keep-alive spaces, then the JSON (or, `held-fail`, the envelope in a 200).
-    if (name === 'held' || name === 'held-fail') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'X-Request-Id': requestId() });
+    // A held answer, as the API sends one: `GaiaDesk-Held: 1`, keep-alive
+    // spaces, then the result or (`held-fail`, `held-gone`) the error envelope
+    // in the 200, with `error.status` the status it would have had.
+    if (name === 'held' || name === 'held-fail' || name === 'held-gone') {
+      const rid = requestId();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'X-Request-Id': rid, 'GaiaDesk-Held': '1' });
       for (let i = 0; i < 3; i++) {
         res.write(' ');
         await tick();
       }
-      const fail = { error: { kind: 'connection_lost', message: 'The desk went away during this operation.', reason: 'desk_disconnected', desk, request_id: requestId() } };
+      const fail =
+        name === 'held-fail'
+          ? { error: { kind: 'connection_lost', message: 'The desk went away during this operation.', reason: 'desk_disconnected', desk, request_id: rid, status: 502 } }
+          : { error: { kind: 'failed', message: 'no job named "held-gone"', desk, request_id: rid, status: 422 } };
       return void res.end(JSON.stringify(name === 'held' ? result : fail));
     }
     return sendJson(res, 200, result);

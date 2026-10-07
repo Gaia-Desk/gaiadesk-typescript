@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DEFAULT_API_URL, GaiaDesk, GaiaDeskError, ProtocolError, RefusedError, UnreachableError, UsageError } from '../dist/index.js';
+import { DEFAULT_API_URL, GaiaDesk, GaiaDeskError, OperationFailedError, ProtocolError, RefusedError, UnreachableError, UsageError } from '../dist/index.js';
 import type { GaiaDeskOptions } from '../dist/index.js';
 import { SseParser } from '../dist/api-stream.js';
 import { seconds } from '../dist/api.js';
@@ -124,6 +124,11 @@ test('waitJob: GET …/wait, {job, timed_out}, keep-alive spaces, a held failure
   const held = await gd.waitJob(OK, 'held');
   assert.equal(held.job.name, 'held', 'leading keep-alive spaces are still JSON');
   await assert.rejects(gd.waitJob(OK, 'held-fail'), (e) => e instanceof GaiaDeskError && e.kind === 'connection_lost' && (e as GaiaDeskError & { reason?: string }).reason === 'desk_disconnected');
+  // The held body is oneOf result | envelope: a late `failed` (error.status 422) is the CLI's error, not a result.
+  await assert.rejects(
+    gd.waitJob(OK, 'held-gone'),
+    (e) => e instanceof OperationFailedError && e.kind === 'failed' && ((e as GaiaDeskError & { json?: { error?: { status?: number } } }).json?.error?.status === 422),
+  );
   await assert.rejects(gd.waitJob(OK, 'nope'), (e) => e instanceof GaiaDeskError && e.kind === 'failed');
   waits.length = 0;
   const slow = await gd.waitJob(OK, 'slow', { timeout: 0.3 });
