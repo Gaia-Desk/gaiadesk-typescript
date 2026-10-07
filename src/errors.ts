@@ -26,7 +26,9 @@ export type ErrorKind =
   | 'failed'
   | 'interrupted'
   | 'not_found'
-  | 'protocol';
+  | 'protocol'
+  /** The native backend's kind for an unreachable desk when it gives no finer reason. */
+  | 'unreachable';
 
 export interface ErrorDetails {
   /** gaiadesk-cli's exit code, when it ran. */
@@ -82,7 +84,7 @@ export class CommandError extends GaiaDeskError {
   }
 }
 
-const UNREACHABLE = new Set(['offline', 'unknown_desk', 'not_online', 'network', 'not_signed_in', 'timeout']);
+const UNREACHABLE = new Set(['offline', 'unknown_desk', 'not_online', 'network', 'not_signed_in', 'timeout', 'unreachable']);
 
 /** The error class for a `kind` from `exec --json`'s error object. */
 export function errorForKind(kind: string, message: string, details: ErrorDetails): GaiaDeskError {

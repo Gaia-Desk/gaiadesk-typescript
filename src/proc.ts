@@ -127,11 +127,26 @@ export interface Exit {
 }
 
 /**
+ * A running command or log follow, whichever backend runs it (CliStream for
+ * gaiadesk-cli, NativeStream for the native library): chunks as they come,
+ * `wait()` for the exit.
+ */
+export interface OutputStream extends AsyncIterable<Chunk> {
+  /** The gaiadesk-cli arguments (the operation's name on the native backend). */
+  readonly argv: readonly string[];
+  write(data: string | Uint8Array): void;
+  end(): void;
+  kill(signal?: string): void;
+  wait(): Promise<Exit>;
+  text(): AsyncGenerator<{ stream: 'stdout' | 'stderr'; text: string }>;
+}
+
+/**
  * A running gaiadesk-cli whose output arrives as it is produced:
  * `for await (const c of stream)` yields stdout/stderr chunks, `wait()`
  * resolves when it exits. Iterate or not; `wait()` works either way.
  */
-export class CliStream implements AsyncIterable<Chunk> {
+export class CliStream implements OutputStream {
   readonly argv: readonly string[];
   private readonly child: ChildProcess;
   private readonly queue: Chunk[] = [];

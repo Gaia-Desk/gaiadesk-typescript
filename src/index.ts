@@ -1,8 +1,10 @@
-// @gaiadesk/sdk: drive GaiaDesk desks from TypeScript / Node.js through gaiadesk-cli.
+// @gaiadesk/sdk: drive GaiaDesk desks from TypeScript / Node.js, through the native
+// library (@gaiadesk/sdk-native) when it is installed, else through gaiadesk-cli.
 export { GaiaDesk } from './client.js';
 export type { GaiaDeskOptions, CallOptions, ExecOptions, StreamExecOptions, Forward } from './client.js';
 export { CliStream } from './proc.js';
-export type { Chunk, Exit, Completed } from './proc.js';
+export type { Chunk, Exit, Completed, OutputStream } from './proc.js';
+export type { NativeModule, NativeClientLike, NativeClientOptions, NativeCallOptions, NativeOutputStream, NativeEvent, NativeForwardHandle, NativeScreenHandle } from './native.js';
 export { McpClient, McpError, MCP_PROTOCOL_VERSION, toolText, toolImage, toolNameAlias, resolveToolName } from './mcp.js';
 export type { McpTool, McpToolResult, McpContent } from './mcp.js';
 export {

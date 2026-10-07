@@ -8,14 +8,22 @@ through MCP.
 
 - Package: `@gaiadesk/sdk` (Node.js 18+, ESM, written in TypeScript, type
   declarations included)
-- Runtime dependencies: none
+- Runtime dependencies: none required; one optional, `@gaiadesk/sdk-native`
 
-**How it works.** The SDK runs the `gaiadesk-cli` that ships with the
-GaiaDesk app and parses the JSON it prints with `--json`. It contains no
-GaiaDesk code; GaiaDesk itself is closed-source. It exposes only what the
-CLI does, with the CLI's own flags and JSON field names. Where the CLI has
-no JSON output, the SDK says so instead of guessing (see
-[Known gaps](#known-gaps)).
+**How it works.** Two backends, one API:
+
+- **Native** (when `@gaiadesk/sdk-native` is installed, which npm does by
+  default as an optional dependency): GaiaDesk's client library as a
+  prebuilt binary for your platform (macOS arm64/x64, Linux x64/arm64 glibc,
+  Windows x64/arm64). Nothing else to install.
+- **CLI** (otherwise): the SDK runs the `gaiadesk-cli` that ships with the
+  GaiaDesk app and parses the JSON it prints with `--json`.
+
+Both return the same results (the CLI's JSON shapes and field names) and
+throw the same error classes with the same `kind`s. This package contains no
+GaiaDesk code; GaiaDesk itself is closed-source, and the native binary ships
+under its own licence (see [Backends](#backends)). Where the CLI has no JSON
+output, the SDK says so instead of guessing (see [Known gaps](#known-gaps)).
 
 Other GaiaDesk developer tools:
 
@@ -30,6 +38,7 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 ## Contents
 
 - [Install](#install)
+- [Backends](#backends)
 - [Quickstart](#quickstart)
 - [Credentials](#credentials)
 - [API](#api)
@@ -42,16 +51,38 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 
 ## Install
 
-1. Install GaiaDesk (it includes `gaiadesk-cli`): <https://gaiadesk.net/download>.
-   The SDK finds `gaiadesk-cli` through `$GAIADESK_CLI`, then `PATH`, then
-   the standard locations (`/Applications/GaiaDesk.app/Contents/MacOS/gaiadesk-cli`,
-   `C:\Program Files\GaiaDesk\gaiadesk-cli.exe`, `/usr/bin/gaiadesk-cli`), or
-   use the `cli` option to point at it.
-2. Install the package:
+```sh
+npm install @gaiadesk/sdk
+```
 
-   ```sh
-   npm install @gaiadesk/sdk
-   ```
+That also installs `@gaiadesk/sdk-native` (an optional dependency) with the
+binary for your platform, and the SDK uses it: no GaiaDesk app or CLI
+needed. With `--omit=optional`, or on a platform without a binary, the SDK
+uses `gaiadesk-cli` instead: install GaiaDesk (it includes the CLI) from
+<https://gaiadesk.net/download>. The SDK finds `gaiadesk-cli` through
+`$GAIADESK_CLI`, then `PATH`, then the standard locations
+(`/Applications/GaiaDesk.app/Contents/MacOS/gaiadesk-cli`,
+`C:\Program Files\GaiaDesk\gaiadesk-cli.exe`, `/usr/bin/gaiadesk-cli`), or use
+the `cli` option to point at it.
+
+## Backends
+
+`gd.backend` says which one a client uses: `'native'` or `'cli'`.
+
+| Option | Effect |
+|---|---|
+| `backend: 'auto'` (default) | native when `@gaiadesk/sdk-native` loads, else the CLI. Passing `cli` means the CLI. |
+| `backend: 'native'` | native, or `CliNotFoundError` when it cannot load |
+| `backend: 'cli'` | always `gaiadesk-cli` |
+| `GAIADESK_SDK_BACKEND=auto\|native\|cli` | the default for `backend` |
+| `native: module` | use this module instead of `require('@gaiadesk/sdk-native')` |
+
+`raw()` and `mcp()` always run `gaiadesk-cli` (they are the CLI's own
+commands). On the native backend, `version()` returns `gaiadesk-native X.Y.Z`,
+streams' `argv` is the operation's name, `kill()` stops the remote side
+whatever the signal, and an error's `exitCode` is the one `gaiadesk-cli`
+would have exited with. `@gaiadesk/sdk-native` is proprietary (free to use
+with GaiaDesk; see its LICENSE); this SDK stays MIT.
 
 ## Quickstart
 
@@ -90,6 +121,7 @@ Every result is typed (`ExecResult`, `CpSummary`, `JobInfo`, `DeskStats`,
 
 Credentials are always passed to `gaiadesk-cli` through its environment,
 never on its command line (other users on a machine can read command lines).
+The native backend takes the same options and variables.
 `gaiadesk-cli` never prompts when run by the SDK (there is no terminal), so a
 missing credential fails fast with a `UsageError`.
 
@@ -203,6 +235,12 @@ and sends the spelling the server advertises.
 | `CommandError` | `exec`/`shell` with `check: true` and a non-zero exit (`.result` has the output) |
 | `McpError` | a JSON-RPC error from `gaiadesk-cli mcp` (`.code`) |
 | `GaiaDeskError` | the base class; also exit 255 from a desk operation (`kind: 'cli_error'`) |
+
+The native backend throws the same classes with the same kinds (an
+unreachable desk is `UnreachableError` with `kind: 'offline'`,
+`'unknown_desk'`, ...; `'unreachable'` only when the library gives no finer
+reason). `CliNotFoundError` there means `backend: 'native'` was asked for and
+`@gaiadesk/sdk-native` could not load.
 
 Every error carries `exitCode`, `kind`, `stderr`, `argv` and the parsed
 `json` when there was one.

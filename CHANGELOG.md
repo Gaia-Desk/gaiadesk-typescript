@@ -2,6 +2,14 @@
 
 ## 0.1.0 (unreleased)
 
+- A native backend: when `@gaiadesk/sdk-native` (an optional dependency,
+  GaiaDesk's client library as a prebuilt binary) is installed, every method
+  runs on it instead of spawning `gaiadesk-cli`. Same results, same error
+  classes and kinds. `backend` option / `GAIADESK_SDK_BACKEND`
+  (`auto` | `native` | `cli`), `gd.backend`, `native` to inject a module.
+  `raw()` and `mcp()` stay on the CLI. Streams are typed `OutputStream`
+  (CliStream implements it).
+
 First version of `@gaiadesk/sdk` (TypeScript, Node 18+), over `gaiadesk-cli`:
 
 - `devices` / `probe`, `exec` / `execStream`, `shell` / `shellStream`,
