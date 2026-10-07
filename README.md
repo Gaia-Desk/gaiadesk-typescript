@@ -1,21 +1,27 @@
-# GaiaDesk SDK (TypeScript and Python)
+# GaiaDesk SDK for TypeScript
 
-Drive your GaiaDesk machines ("desks") from code: list them and check that
-they are reachable, run commands and get exit codes back, stream output,
-copy files, run background jobs, read stats, mint and revoke scoped agent
-tokens, forward ports, and reach the screen tools through MCP.
+Drive your GaiaDesk machines ("desks") from TypeScript and Node.js: list
+them and check that they are reachable, run commands and get exit codes
+back, stream output, copy files, run background jobs, read stats, mint and
+revoke scoped agent tokens, forward ports, and reach the screen tools
+through MCP.
 
-| Package | Directory | Runtime | Dependencies |
-|---|---|---|---|
-| `@gaiadesk/sdk` | [`typescript/`](typescript) | Node.js 18+ (ESM, with type declarations) | none |
-| `gaiadesk` | [`python/`](python) | Python 3.9+ (sync and asyncio) | none |
+- Package: `@gaiadesk/sdk` (Node.js 18+, ESM, written in TypeScript, type
+  declarations included)
+- Runtime dependencies: none
 
-**How it works.** Both packages run the `gaiadesk-cli` that ships with the
-GaiaDesk app and parse the JSON it prints with `--json`. They contain no
-GaiaDesk code; GaiaDesk itself is closed-source. They expose only what the
+**How it works.** The SDK runs the `gaiadesk-cli` that ships with the
+GaiaDesk app and parses the JSON it prints with `--json`. It contains no
+GaiaDesk code; GaiaDesk itself is closed-source. It exposes only what the
 CLI does, with the CLI's own flags and JSON field names. Where the CLI has
 no JSON output, the SDK says so instead of guessing (see
 [Known gaps](#known-gaps)).
+
+Other GaiaDesk developer tools:
+
+- **Python SDK**: [Gaia-Desk/gaiadesk-python](https://github.com/Gaia-Desk/gaiadesk-python) (`pip install gaiadesk`)
+- **MCP server** for AI assistants: [Gaia-Desk/gaiadesk-mcp](https://github.com/Gaia-Desk/gaiadesk-mcp) (`npx -y @gaiadesk/mcp`)
+- **MCP or SDK?** [When to give a model the MCP server and when to use an SDK](https://github.com/Gaia-Desk/gaiadesk-mcp/blob/main/docs/mcp-vs-sdk.md)
 
 MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 
@@ -24,8 +30,7 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 ## Contents
 
 - [Install](#install)
-- [Quickstart: TypeScript](#quickstart-typescript)
-- [Quickstart: Python](#quickstart-python)
+- [Quickstart](#quickstart)
 - [Credentials](#credentials)
 - [API](#api)
 - [Errors and exit codes](#errors-and-exit-codes)
@@ -45,11 +50,10 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 2. Install the package:
 
    ```sh
-   npm install @gaiadesk/sdk     # TypeScript / JavaScript
-   pip install gaiadesk          # Python
+   npm install @gaiadesk/sdk
    ```
 
-## Quickstart: TypeScript
+## Quickstart
 
 ```ts
 import { GaiaDesk, RefusedError } from '@gaiadesk/sdk';
@@ -73,46 +77,14 @@ try {
 const s = gd.execStream('392586273', ['npm', 'test']);
 for await (const c of s.text()) process[c.stream].write(c.text);
 console.log('exit', (await s.wait()).exitCode);
+
+// Many desks at once:
+const results = await Promise.all(['392586273', '608876148'].map((d) => gd.exec(d, 'hostname')));
+for (const x of results) console.log(x.desk, x.stdout.trim());
 ```
 
-## Quickstart: Python
-
-```python
-from gaiadesk import GaiaDesk, RefusedError
-
-gd = GaiaDesk(token_file="~/.config/gaiadesk/bot.token")
-
-for d in gd.devices()["devices"]:
-    print(d["desk_id"], d["name"], d["online"])
-
-r = gd.exec("392586273", "uname -a", shell="sh", timeout=60)
-print(r["exit"], r["stdout"], r["route"])
-
-try:
-    gd.upload("./dist", "392586273", "deploy/", recursive=True)
-except RefusedError as e:
-    print("the token lacks the cp scope:", e)
-
-s = gd.exec_stream("392586273", ["npm", "test"])
-for stream, text in s.text():
-    print(text, end="")
-print("exit", s.wait().exit_code)
-```
-
-asyncio:
-
-```python
-import asyncio
-from gaiadesk import AsyncGaiaDesk
-
-async def main():
-    gd = AsyncGaiaDesk(token_file="/home/me/.config/gaiadesk/bot.token")
-    results = await asyncio.gather(*(gd.exec(d, "hostname") for d in ["392586273", "608876148"]))
-    for r in results:
-        print(r["desk"], r["stdout"].strip())
-
-asyncio.run(main())
-```
+Every result is typed (`ExecResult`, `CpSummary`, `JobInfo`, `DeskStats`,
+... in [`src/types.ts`](src/types.ts)), with the CLI's own field names.
 
 ## Credentials
 
@@ -121,16 +93,16 @@ never on its command line (other users on a machine can read command lines).
 `gaiadesk-cli` never prompts when run by the SDK (there is no terminal), so a
 missing credential fails fast with a `UsageError`.
 
-| Option (TS / Python) | Environment variable | Use |
+| Option | Environment variable | Use |
 |---|---|---|
-| `tokenFile` / `token_file` | `GAIADESK_TOKEN_FILE` | **Recommended.** A scoped, expiring agent token file from `gaiadesk-cli token create --out <file>` (mode 0600). |
-| `code` / `code` | `GAIADESK_CODE` | The desk's code or unattended password. Needed for token administration (`createToken`, `listTokens`, `revokeToken`, `audit`), which only the desk's owner may do. An explicit `code` overrides an inherited `GAIADESK_TOKEN_FILE`. |
-| `accountToken` / `account_token` | `GAIADESK_TOKEN` | A GaiaDesk account session. Optional: by default the CLI uses its own sign-in (`gaiadesk-cli login`), which lists your account's desks and enables `--account` revokes and audits. |
-| `agentToken` / `agent_token` | `GAIADESK_AGENT_TOKEN` | An agent token with the `screen` scope, for `agentConnect` and the MCP screen tools. |
-| `server` / `server` | `GAIADESK_SERVER` | Signaling server (`wss://…/ws`); default `wss://gaiadesk.net/ws`. Also passed as `--server` to `mcp` and `agent-connect`. |
-| `persist` / `persist` | `GAIADESK_PERSIST` | How long a desk connection is held for later commands (default `10m`; `0` = none). |
-| `env` / `env` | | The base environment (default: this process's). |
-| `cli` / `cli` | `GAIADESK_CLI` | Path to `gaiadesk-cli`, or a command vector. |
+| `tokenFile` | `GAIADESK_TOKEN_FILE` | **Recommended.** A scoped, expiring agent token file from `gaiadesk-cli token create --out <file>` (mode 0600). |
+| `code` | `GAIADESK_CODE` | The desk's code or unattended password. Needed for token administration (`createToken`, `listTokens`, `revokeToken`, `audit`), which only the desk's owner may do. An explicit `code` overrides an inherited `GAIADESK_TOKEN_FILE`. |
+| `accountToken` | `GAIADESK_TOKEN` | A GaiaDesk account session. Optional: by default the CLI uses its own sign-in (`gaiadesk-cli login`), which lists your account's desks and enables `--account` revokes and audits. |
+| `agentToken` | `GAIADESK_AGENT_TOKEN` | An agent token with the `screen` scope, for `agentConnect` and the MCP screen tools. |
+| `server` | `GAIADESK_SERVER` | Signaling server (`wss://…/ws`); default `wss://gaiadesk.net/ws`. Also passed as `--server` to `mcp` and `agent-connect`. |
+| `persist` | `GAIADESK_PERSIST` | How long a desk connection is held for later commands (default `10m`; `0` = none). |
+| `env` | | The base environment (default: this process's). |
+| `cli` | `GAIADESK_CLI` | Path to `gaiadesk-cli`, or a command vector. |
 
 Mint, list and revoke tokens (the desk's owner, with the unattended password):
 
@@ -148,37 +120,36 @@ every request; the SDK does not.
 
 ## API
 
-TypeScript names first, Python in parentheses. Every result is the CLI's
-JSON, with the CLI's field names (types in `typescript/src/types.ts` and
-`python/src/gaiadesk/types.py`).
+Every result is the CLI's JSON, with the CLI's field names (types in
+[`src/types.ts`](src/types.ts)).
 
 | Method | CLI | Returns |
 |---|---|---|
 | `version()` | `--version` | `"gaiadesk-cli X.Y.Z"` |
-| `devices({probe?, deskId?})` (`devices(probe=, desk_id=)`) | `devices --json [--probe] [-d]` | `{devices[], sources[], notes[]}`; with `probe`, unreachable desks have `reachable: false` |
+| `devices({probe?, deskId?})` | `devices --json [--probe] [-d]` | `{devices[], sources[], notes[]}`; with `probe`, unreachable desks have `reachable: false` |
 | `probe(deskId)` | `devices --probe -d` | one device row with `probe` |
 | `exec(deskId, command, opts)` | `exec --json` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
-| `execStream(deskId, command, opts)` (`exec_stream`) | `exec` | a stream of stdout/stderr chunks, then the exit code |
+| `execStream(deskId, command, opts)` | `exec` | a stream of stdout/stderr chunks, then the exit code |
 | `shell(deskId, script, opts)` | `shell --json`, script on stdin | as `exec` |
-| `shellStream(deskId, script?, opts)` (`shell_stream`) | `shell` | stream; without a script, stdin stays open for `write()`/`end()` |
+| `shellStream(deskId, script?, opts)` | `shell` | stream; without a script, stdin stays open for `write()`/`end()` |
 | `upload(local, deskId, remote, {recursive})` | `cp --json <local> <desk>:<remote>` | `{direction, desk, destination, files, dirs, bytes, resumed_bytes, failed[], seconds}` |
 | `download(deskId, remote, local, {recursive})` | `cp --json <desk>:<remote> <local>` | as above |
-| `runJob(deskId, name, command, {priority, cpu, mem, keepAwake})` (`run_job`) | `run --detach --json` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement}` |
+| `runJob(deskId, name, command, {priority, cpu, mem, keepAwake})` | `run --detach --json` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement}` |
 | `jobs(deskId)` | `ps --json` | job[] |
-| `jobLogs(deskId, name, {tail})` (`job_logs`) | `logs` | output text |
-| `followJobLogs(deskId, name)` (`follow_job_logs`) | `logs -f` | stream |
-| `killJob(deskId, name)` (`kill_job`) | `kill --json` | job |
+| `jobLogs(deskId, name, {tail})` | `logs` | output text |
+| `followJobLogs(deskId, name)` | `logs -f` | stream |
+| `killJob(deskId, name)` | `kill --json` | job |
 | `stats(deskId)` | `stats --json` | `{desk, hostname, os, os_version, cpu_percent, cpus, load, mem_total_mb, mem_free_mb, disks[], uptime_secs, jobs_running}` |
 | `measure(deskId, {count})` | `measure --json` | `{desk, sent, rtt_ms{n,p50,p95,max}, clock_offset_ms, clock_uncertainty_ms}` |
-| `createToken({desks, name, expires, scopes, cwd, lowPriv, out})` (`create_token`) | `token create --json` | `{tokens[{desk, token, secret?}], file?}` |
-| `listTokens(deskId)` (`list_tokens`) | `token list --json` | token[] `{label, id, scopes, issued_at_ms, expires_at_ms, revoked, last_used_ms, cwd, low_priv}` |
-| `revokeToken(deskId, nameOrId \| {all:true}, {account})` (`revoke_token(desk, name, all_for_desk=, account=)`) | `token revoke --json` | `{revoked, stopped_sessions}` or (account) `{desk, ok, message}` |
+| `createToken({desks, name, expires, scopes, cwd, lowPriv, out})` | `token create --json` | `{tokens[{desk, token, secret?}], file?}` |
+| `listTokens(deskId)` | `token list --json` | token[] `{label, id, scopes, issued_at_ms, expires_at_ms, revoked, last_used_ms, cwd, low_priv}` |
+| `revokeToken(deskId, nameOrId \| {all:true}, {account})` | `token revoke --json` | `{revoked, stopped_sessions}` or (account) `{desk, ok, message}` |
 | `audit(deskId, {token, limit, account})` | `audit --json` | event[] `{at_ms, desk, token, token_id, action, detail, bytes, cwd, exit_code, duration_ms}` |
-| `meshStatus()` (`mesh_status`) | `mesh status --json` | `{self, peers[]}` |
-| `meshIp(deskId)` (`mesh_ip`) | `mesh ip` | the address |
+| `meshStatus()` | `mesh status --json` | `{self, peers[]}` |
+| `meshIp(deskId)` | `mesh ip` | the address |
 | `disconnect(deskId?)` | `disconnect --desk-id \| --all` | nothing |
-| `forward(deskId, spec \| spec[])` | `forward --json` | handle with `listening[]` and `close()`; Python: a context manager |
-| `agentConnect(deskId)` (`agent_connect`) | `agent-connect` | the CLI's confirmation line |
+| `forward(deskId, spec \| spec[])` | `forward --json` | handle with `listening[]`, `close()` and `done` |
+| `agentConnect(deskId)` | `agent-connect` | the CLI's confirmation line |
 | `mcp({auditDir, allowDomains})` | `mcp` (stdio) | an MCP client: `listTools()`, `callTool(name, args)`, `close()` |
 | `raw(args, {input})` | anything | `{code, stdout, stderr}`: the escape hatch |
 
@@ -186,7 +157,7 @@ JSON, with the CLI's field names (types in `typescript/src/types.ts` and
 `pwsh`), `timeout` (seconds or `"10m"`; `0` = none; CLI default 30m),
 `connectTimeout` (default 60s), `persist`, `verbose`, `stdin` (text or
 bytes; default closed), `check` (throw `CommandError` on a non-zero exit).
-TS also takes `signal` (an `AbortSignal`): aborting sends SIGINT, which
+Desk methods also take `signal` (an `AbortSignal`): aborting sends SIGINT, which
 `gaiadesk-cli` turns into stopping the remote command.
 
 `command` as a **string** is one command line for the desk's shell,
@@ -212,8 +183,11 @@ await m.callTool('gaiadesk.close_session', { session_id: session });
 await m.close();
 ```
 
-Every tool and its arguments are listed in the `gaiadesk-mcp` repository's
-README ("The tools"), and `listTools()` returns their schemas.
+Every tool and its arguments are listed in the
+[gaiadesk-mcp README](https://github.com/Gaia-Desk/gaiadesk-mcp#the-tools)
+("The tools"), and `listTools()` returns their schemas. `callTool` accepts a
+tool name with a dot or an underscore (`gaiadesk.exec` or `gaiadesk_exec`)
+and sends the spelling the server advertises.
 
 ## Errors and exit codes
 
@@ -230,8 +204,8 @@ README ("The tools"), and `listTools()` returns their schemas.
 | `McpError` | a JSON-RPC error from `gaiadesk-cli mcp` (`.code`) |
 | `GaiaDeskError` | the base class; also exit 255 from a desk operation (`kind: 'cli_error'`) |
 
-Every error carries `exitCode`/`exit_code`, `kind`, `stderr`, `argv` and the
-parsed `json` when there was one.
+Every error carries `exitCode`, `kind`, `stderr`, `argv` and the parsed
+`json` when there was one.
 
 A non-zero exit from **your command** is not an error: `exec` returns it in
 `exit` (and `remote_code`), with `timed_out: true` and exit 124 when
@@ -252,14 +226,19 @@ A non-zero exit from **your command** is not an error: `exec` returns it in
 
 | File | What |
 |---|---|
-| `exec-on-a-desk.mjs`, `exec_on_a_desk.py` | find a reachable desk, run a command, handle the outcomes |
-| `copy-a-file.mjs`, `copy_a_file.py` | upload, run, download, resume |
-| `run-a-job.mjs`, `run_a_job.py` | a background job with caps; poll, follow its log, stop it |
-| `mcp-vs-sdk.md` | when to give a model the MCP server and when to use the SDK |
+| `exec-on-a-desk.ts` | find a reachable desk, run a command, handle the outcomes |
+| `copy-a-file.ts` | upload, run, download, resume |
+| `run-a-job.ts` | a background job with caps; follow its log, stop it |
+
+Run one with `npx tsx examples/exec-on-a-desk.ts <desk-id>`, or compile with
+`tsc` and run the output with `node`. `npm test` type-checks them.
+
+When should a model drive the desk instead of your code? See
+[MCP or SDK?](https://github.com/Gaia-Desk/gaiadesk-mcp/blob/main/docs/mcp-vs-sdk.md).
 
 ## Known gaps
 
-Things the CLI does not (yet) offer, so neither does the SDK:
+Things the CLI does not (yet) offer, so neither does the SDK (the Python SDK has the same list):
 
 1. **No working directory for `exec`.** There is no `--cwd` flag. A token
    minted with `--cwd` starts every command there; otherwise write it into
@@ -284,7 +263,9 @@ Things the CLI does not (yet) offer, so neither does the SDK:
 5. **Inconsistent JSON envelopes.** Errors appear as `{"error": "..."}`,
    `{"refused": "..."}`, `{"desk", "error"}`, `{"desk", "ok", "message"}`, or
    exec's `{"error": {"kind", "message"}}`; `ps`, `token list` and `audit`
-   print bare arrays. The SDK normalizes these into the errors above.
+   print bare arrays. The SDK normalizes these into the errors above, and
+   reads them in exactly one place (`errorEnvelope` in
+   [`src/errors.ts`](src/errors.ts)).
 6. **Exit 1 vs 254 for jobs and tokens** is decided inside the CLI by
    matching the desk's wording, so an unusual refusal may surface as
    `OperationFailedError` rather than `RefusedError`.
@@ -308,11 +289,19 @@ Things the CLI does not (yet) offer, so neither does the SDK:
 ## Development
 
 ```sh
-cd typescript && npm ci && npm test       # tsc build, then node:test against a fake gaiadesk-cli
-cd python && python -m unittest discover -s tests
+npm ci
+npm test       # build src/ to dist/, build test/ to dist-test/, type-check examples/, run node:test
 ```
 
-The tests never touch a real desk: `typescript/test-fixtures/fake-cli.mjs` and
-`python/tests/fixtures/fake_cli.py` print the JSON shapes the real CLI
-documents and record the argv and environment they were given. CI runs both
-on Linux, macOS and Windows (`.github/workflows/ci.yml`).
+The tests import the built `dist/` (what npm publishes) and never touch a
+real desk: [`test/fixtures/fake-cli.ts`](test/fixtures/fake-cli.ts) prints
+the JSON shapes the real CLI documents and records the argv and environment
+it was given. CI runs on Linux, macOS and Windows with Node 18, 20 and 22
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
+The only dev dependencies are `typescript` and `@types/node`.
+
+## License
+
+MIT. See [LICENSE](LICENSE). GaiaDesk itself is proprietary software and is
+not covered by this license.

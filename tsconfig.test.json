@@ -1,0 +1,11 @@
+{
+  // The tests, compiled to dist-test/. They import the BUILT package
+  // (../dist/*.js), so `npm run build` must run first (npm test does).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "test",
+    "outDir": "dist-test",
+    "declaration": false
+  },
+  "include": ["test"]
+}

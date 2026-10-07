@@ -1,0 +1,12 @@
+{
+  // Type-checks examples/ against the built package (no output).
+  // Run from a copy of this repository, `@gaiadesk/sdk` resolves to this
+  // package itself (package.json "exports" self-reference).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false
+  },
+  "include": ["examples"]
+}

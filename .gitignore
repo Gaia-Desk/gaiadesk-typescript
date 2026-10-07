@@ -1,14 +1,6 @@
-# TypeScript
 node_modules/
-typescript/dist/
-*.tgz
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
 dist/
-.venv/
-
+dist-test/
+*.tgz
 .DS_Store
+npm-debug.log*
