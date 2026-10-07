@@ -1,10 +1,16 @@
 // A minimal MCP client for `gaiadesk-cli mcp` over stdio. This is how the
-// SDK reaches the SCREEN tools (open_session, screenshot, click, ...), which
-// gaiadesk-cli exposes only through its MCP server.
+// SDK reaches the SCREEN tools (gaiadesk_open_session, gaiadesk_screenshot,
+// gaiadesk_click, ...), which gaiadesk-cli exposes only through its MCP server.
 //
-// gaiadesk-cli mcp speaks the stateless MCP revision 2026-07-28: no
-// `initialize`, and every request carries the protocol version and client
-// capabilities in params._meta.
+// It speaks the stateless MCP revision 2026-07-28: no `initialize`, and every
+// request carries the protocol version and client capabilities in
+// params._meta. Every gaiadesk-cli mcp speaks it (0.10.324+ also speaks the
+// standard `initialize` lifecycle, which this client does not need).
+//
+// Tool names: gaiadesk-cli 0.10.324+ advertises `gaiadesk_<tool>` (and still
+// accepts the dotted spelling); older CLIs advertise and accept only
+// `gaiadesk.<tool>`. Use the `gaiadesk_` names (GAIADESK_TOOLS); the client
+// sends whichever spelling the server advertises.
 
 import { CliStream } from './proc.js';
 import type { Invocation } from './proc.js';
@@ -29,9 +35,39 @@ export function withProtocolMeta(params: Record<string, unknown> = {}): Record<s
 }
 
 /**
- * The other spelling of a GaiaDesk tool name: `gaiadesk.exec` <-> `gaiadesk_exec`.
- * (Some model providers allow only `[A-Za-z0-9_-]` in function names.) null for
- * a name that is not a GaiaDesk tool.
+ * The tools of `gaiadesk-cli mcp`, by their names since 0.10.324. Desk tools
+ * (need a token file or code in the server's environment) first, then the
+ * screen tools (need an agent token with the `screen` scope).
+ */
+export const GAIADESK_TOOLS = [
+  'gaiadesk_exec',
+  'gaiadesk_copy_files',
+  'gaiadesk_job_run',
+  'gaiadesk_job_list',
+  'gaiadesk_job_logs',
+  'gaiadesk_job_kill',
+  'gaiadesk_forward_start',
+  'gaiadesk_forward_stop',
+  'gaiadesk_open_session',
+  'gaiadesk_close_session',
+  'gaiadesk_screenshot',
+  'gaiadesk_click',
+  'gaiadesk_move_pointer',
+  'gaiadesk_drag',
+  'gaiadesk_press_button',
+  'gaiadesk_scroll',
+  'gaiadesk_type_text',
+  'gaiadesk_press_keys',
+  'gaiadesk_hold_keys',
+  'gaiadesk_wait',
+  'gaiadesk_pointer_position',
+] as const;
+
+export type GaiaDeskToolName = (typeof GAIADESK_TOOLS)[number];
+
+/**
+ * The other spelling of a GaiaDesk tool name: `gaiadesk_exec` (0.10.324+) <->
+ * `gaiadesk.exec` (older CLIs). null for a name that is not a GaiaDesk tool.
  */
 export function toolNameAlias(name: string): string | null {
   const m = /^gaiadesk([._])(.+)$/.exec(name);
@@ -164,9 +200,10 @@ export class McpClient {
    * tool caught, a non-zero exit) is a result with `isError: true`, not a
    * thrown error; protocol errors throw McpError.
    *
-   * `name` may be spelled `gaiadesk.exec` or `gaiadesk_exec`: the client sends
-   * the spelling the server advertises (it fetches the tool list once if
-   * listTools() has not been called).
+   * Use the `gaiadesk_exec` spelling (GAIADESK_TOOLS); `gaiadesk.exec` works
+   * too. The client sends the spelling the server advertises (it fetches the
+   * tool list once if listTools() has not been called), so the same name
+   * works with gaiadesk-cli 0.10.324+ and with older, dotted-name CLIs.
    */
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<McpToolResult> {
     if (!this.toolNames && toolNameAlias(name) !== null) {
@@ -201,7 +238,7 @@ export function toolText(r: McpToolResult): string {
     .join('\n');
 }
 
-/** The first image of a tool result (`gaiadesk.screenshot`): its MIME type and base64 data. */
+/** The first image of a tool result (`gaiadesk_screenshot`): its MIME type and base64 data. */
 export function toolImage(r: McpToolResult): { mimeType: string; base64: string } | null {
   const c = r.content.find((x) => x.type === 'image') as { data: string; mimeType: string } | undefined;
   return c ? { mimeType: c.mimeType, base64: c.data } : null;

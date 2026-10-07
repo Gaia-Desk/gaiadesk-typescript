@@ -58,6 +58,18 @@ test('run --detach: caps and the command after --', () => {
   assert.throws(() => A.runArgs('1', 'b', 'make', { priority: 'urgent' as 'low' }), UsageError);
 });
 
+test('exec --json-stream and --cwd (gaiadesk-cli 0.10.324+)', () => {
+  assert.deepEqual(A.execArgs('123456789', 'make', { cwd: '/srv/app' }, 'stream'), [
+    'exec', '--desk-id', '123456789', '--quiet', '--json-stream', '--no-stdin', '--cwd', '/srv/app', '--', 'make',
+  ]);
+  assert.deepEqual(A.execArgs('123456789', 'make', { cwd: 'src', shell: 'sh' }, true).slice(4), ['--json', '--no-stdin', '--shell', 'sh', '--cwd', 'src', '--', 'make']);
+  assert.ok(!A.execArgs('1', 'x', {}, 'stream').includes('--json'), '--json and --json-stream are never combined');
+  assert.ok(!A.execArgs('1', 'x', {}, false).includes('--cwd'), 'no --cwd unless asked');
+  for (const bad of ['', '  ', 'a\0b']) assert.throws(() => A.execArgs('1', 'x', { cwd: bad }, true), UsageError, JSON.stringify(bad));
+  assert.deepEqual(A.runArgs('123456789', 'build', 'make', { cwd: '/srv/app' }), ['run', '--detach', '--name', 'build', '--desk-id', '123456789', '--cwd', '/srv/app', '--json', '--', 'make']);
+  assert.throws(() => A.runArgs('1', 'b', 'make', { cwd: '' }), UsageError);
+});
+
 test('jobs, stats, measure', () => {
   assert.deepEqual(A.psArgs('1'), ['ps', '--desk-id', '1', '--json']);
   assert.deepEqual(A.killArgs('1', 'build'), ['kill', 'build', '--desk-id', '1', '--json']);

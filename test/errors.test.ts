@@ -8,12 +8,50 @@ import {
   ConnectionLostError,
   GaiaDeskError,
   OperationFailedError,
+  ProtocolError,
   RefusedError,
   UnreachableError,
   UsageError,
 } from '../dist/index.js';
 
-test('errorEnvelope: every shape the CLI prints today', () => {
+test('errorEnvelope: the one envelope of gaiadesk-cli 0.10.324+', () => {
+  assert.deepEqual(errorEnvelope({ error: { kind: 'unreachable', message: 'desk is offline', reason: 'offline', desk: '123456789' } }), {
+    kind: 'unreachable',
+    message: 'desk is offline',
+    reason: 'offline',
+    desk: '123456789',
+  });
+  assert.deepEqual(errorEnvelope({ error: { kind: 'failed', message: 'no job named x', reason: null, desk: null } }), { kind: 'failed', message: 'no job named x' });
+});
+
+test('errorFromRun: the envelope kind decides the class, the reason the SDK kind; desk is carried', () => {
+  const run = { code: 255, stderr: '' };
+  const off = errorFromRun(run, ['exec'], { error: { kind: 'unreachable', message: 'm', reason: 'offline', desk: '123456789' } });
+  assert.ok(off instanceof UnreachableError);
+  assert.equal(off.kind, 'offline');
+  assert.equal(off.reason, 'offline');
+  assert.equal(off.desk, '123456789');
+  const plain = errorFromRun(run, [], { error: { kind: 'unreachable', message: 'm' } });
+  assert.ok(plain instanceof UnreachableError);
+  assert.equal(plain.kind, 'unreachable');
+  assert.equal(plain.reason, null);
+  assert.equal(plain.desk, null);
+  const failed = errorFromRun({ code: 1, stderr: '' }, [], { error: { kind: 'failed', message: 'no job named x' } });
+  assert.ok(failed instanceof OperationFailedError);
+  assert.equal(failed.kind, 'failed');
+  const local = errorFromRun(run, [], { error: { kind: 'failed', message: 'm', reason: 'local' } });
+  assert.ok(local instanceof OperationFailedError);
+  assert.equal(local.kind, 'local');
+  assert.ok(errorFromRun(run, [], { error: { kind: 'protocol', message: 'too old' } }) instanceof ProtocolError);
+  assert.ok(errorFromRun({ code: 254, stderr: '' }, [], { error: { kind: 'refused', message: 'm' } }) instanceof RefusedError);
+  const odd = errorFromRun(run, [], { error: { kind: 'unreachable', message: 'm', reason: 'something_new' } });
+  assert.equal(odd.kind, 'unreachable', 'an unknown reason keeps the kind');
+  assert.equal(odd.reason, 'something_new');
+  const noMessage = errorFromRun({ code: 255, stderr: 'gaiadesk-cli: from stderr\n' }, [], { error: { kind: 'usage', message: '' } });
+  assert.equal(noMessage.message, 'from stderr');
+});
+
+test('errorEnvelope: the shapes older CLIs print', () => {
   assert.deepEqual(errorEnvelope({ error: { kind: 'offline', message: 'desk is offline' } }), { kind: 'offline', message: 'desk is offline' });
   assert.deepEqual(errorEnvelope({ error: { kind: 'usage' } }), { kind: 'usage', message: '' });
   assert.deepEqual(errorEnvelope({ error: 'no job named x' }), { message: 'no job named x' });

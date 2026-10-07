@@ -1,11 +1,28 @@
 // The GaiaDesk client: each method runs one gaiadesk-cli command (with --json
-// where the CLI has it) and returns the CLI's own JSON, typed. When the
+// where the CLI has it) and returns the CLI's own JSON, typed. Works with
+// gaiadesk-cli 0.10.324+ (one error envelope, object list shapes,
+// `--json-stream`, `--cwd`; checked through `--version --json`) and with
+// older CLIs (their shapes are read too). When the
 // native library (@gaiadesk/sdk-native, an optional dependency) is installed,
 // the same methods run on it instead: no gaiadesk-cli needed, same results,
 // same errors (see `backend`).
 
 import * as A from './args.js';
-import { CliNotFoundError, CommandError, GaiaDeskError, ProtocolError, RefusedError, UsageError, errorEnvelope, errorFromRun, lastStderrLine } from './errors.js';
+import {
+  CliNotFoundError,
+  CommandError,
+  GaiaDeskError,
+  ProtocolError,
+  RefusedError,
+  UsageError,
+  errorEnvelope,
+  errorForKind,
+  errorFromRun,
+  lastStderrLine,
+  sdkKind,
+} from './errors.js';
+import { DeferredStream, JsonExecStream } from './exec-stream.js';
+import { NEEDS, cliVersionInfo, requireFeature } from './features.js';
 import { locateCli } from './locate.js';
 import { McpClient } from './mcp.js';
 import * as N from './native-args.js';
@@ -13,6 +30,7 @@ import { NativeBackend, fromNative, loadNative, nativeOptions } from './native.j
 import type { NativeModule } from './native.js';
 import { CliStream, runCli } from './proc.js';
 import type { Completed, Exit, Invocation, OutputStream } from './proc.js';
+import { listOf, neverRan, normalizeExecResult, textOf } from './results.js';
 import type {
   AbortSignalLike,
   AccountRevokeResult,
@@ -28,6 +46,7 @@ import type {
   TokenCreateResult,
   TokenInfo,
   TokenRevokeResult,
+  VersionInfo,
 } from './types.js';
 
 export interface GaiaDeskOptions {
@@ -74,6 +93,13 @@ export interface CallOptions {
 export interface ExecOptions extends A.RunShapeOptions, CallOptions {
   /** Text or bytes for the command's stdin (then end of input). Default: stdin closed. */
   stdin?: string | Uint8Array;
+  /**
+   * The directory the command starts in on the desk (relative: from the desk
+   * user's home, or a confined token's folder). Needs gaiadesk-cli 0.10.324+
+   * (feature `exec_cwd`; an older CLI is a UsageError, never ignored) or the
+   * native library.
+   */
+  cwd?: string;
   /** Throw CommandError when the command exits non-zero (or times out). Default false. */
   check?: boolean;
 }
@@ -81,6 +107,8 @@ export interface ExecOptions extends A.RunShapeOptions, CallOptions {
 export interface StreamExecOptions extends A.RunShapeOptions, CallOptions {
   /** Data for stdin, or `true` to keep stdin open for `stream.write()` / `stream.end()`. */
   stdin?: string | Uint8Array | true;
+  /** The directory the command starts in on the desk (as ExecOptions.cwd). */
+  cwd?: string;
 }
 
 /** A running `gaiadesk-cli forward`. */
@@ -208,7 +236,27 @@ export class GaiaDesk {
 
   // ───────────────────────────── version ─────────────────────────────
 
-  /** `gaiadesk-cli --version` (e.g. "gaiadesk-cli 0.1.0"); on the native backend "gaiadesk-native <version>". */
+  /**
+   * `gaiadesk-cli --version --json` (always gaiadesk-cli, like raw()): its
+   * release, `features`, JSON shapes and MCP protocol revisions; null for a
+   * CLI from before 0.10.324, which does not have it. Asked once per CLI
+   * path in this process.
+   */
+  versionInfo(): Promise<VersionInfo | null> {
+    return cliVersionInfo(this.cli, () => runCli(this.inv(['--version', '--json'])));
+  }
+
+  /** The features gaiadesk-cli lists in `--version --json` (none for a CLI before 0.10.324). */
+  async features(): Promise<ReadonlySet<string>> {
+    return new Set((await this.versionInfo())?.features ?? []);
+  }
+
+  /** A UsageError unless gaiadesk-cli has `feature` (an option it would not understand must not be dropped). */
+  private async require(feature: keyof typeof NEEDS): Promise<void> {
+    requireFeature(await this.versionInfo(), feature);
+  }
+
+  /** `gaiadesk-cli --version` (e.g. "gaiadesk-cli 0.10.324"); on the native backend "gaiadesk-native <version>". */
   async version(): Promise<string> {
     const n = this.nat();
     if (n) return `gaiadesk-native ${(await n.call<{ version: string }>('version')).version}`;
@@ -246,18 +294,22 @@ export class GaiaDesk {
       if (done.code !== 0) throw this.failure(done, args, json);
       throw new ProtocolError('gaiadesk-cli printed no exec JSON', { exitCode: done.code, stderr: done.stderr, argv: args, kind: 'protocol' });
     }
-    const r = json as unknown as ExecResult;
+    // `error` as 0.10.324+ spells it ({kind, message, reason?, desk?} or null), whatever the CLI.
+    const r = normalizeExecResult(json);
     const details = { exitCode: done.code, stderr: done.stderr, argv: args, json };
-    const env = errorEnvelope(json);
-    // A failure before the command ran: an envelope with a kind.
-    if (env?.kind !== undefined) throw errorFromRun(done, args, json);
-    // The desk refused the command itself (e.g. a token without `exec`): exit 254, it never ran.
-    if (r.exit === 254 && (r.remote_code === -1 || r.remote_code === null)) {
-      throw new RefusedError(env?.message || lastStderrLine(done.stderr) || 'the desk refused the command', { ...details, kind: 'refused' });
+    // It never ran (unreachable, refused, a cwd that is not there, ...): the error, typed by its kind.
+    if (neverRan(r) && r.error) {
+      const e = r.error;
+      const msg = e.message || lastStderrLine(done.stderr) || 'the command did not run';
+      throw errorForKind(e.kind, msg, { ...details, kind: sdkKind(e.kind, e.reason), reason: e.reason ?? null, desk: e.desk ?? r.desk });
+    }
+    // The desk refused the command itself (an older CLI that gave no reason): exit 254, it never ran.
+    if (r.exit === 254 && (r.remote_code === -1 || r.remote_code === null || r.remote_code === undefined)) {
+      throw new RefusedError(lastStderrLine(done.stderr) || 'the desk refused the command', { ...details, kind: 'refused', desk: r.desk });
     }
     if (check && r.exit !== 0) {
       const why = r.timed_out ? 'timed out' : `exited ${r.exit}`;
-      throw new CommandError(`command on desk ${r.desk} ${why}`, r, details);
+      throw new CommandError(`command on desk ${r.desk} ${why}`, r, { ...details, desk: r.desk });
     }
     return r;
   }
@@ -272,17 +324,33 @@ export class GaiaDesk {
     const n = this.nat();
     if (n) return n.exec('exec', N.exec(deskId, command, o), { input: o.stdin, signal: o.signal, check: o.check });
     const args = A.execArgs(deskId, command, { ...o, stdin: o.stdin !== undefined }, true);
+    if (o.cwd !== undefined) await this.require('exec_cwd');
     const done = await runCli(this.inv(args, o.stdin, o.signal));
     return this.execOutcome(done, args, o.check);
   }
 
-  /** `exec` without --json: stdout/stderr arrive as the command writes them. */
+  /**
+   * `exec`, streaming: stdout/stderr arrive as the command writes them, then
+   * `wait()` gives the exit. On gaiadesk-cli 0.10.324+ (feature
+   * `exec_json_stream`) it runs `exec --json-stream`, so the exit also
+   * carries the run's `result` (and `error` when it never ran); an older CLI
+   * runs plain `exec`. A usage error found only once the CLI is known (`cwd`
+   * on an older CLI) is thrown by iteration and wait().
+   */
   execStream(deskId: string, command: string | readonly string[], o: StreamExecOptions = {}): OutputStream {
     const n = this.nat();
     if (n) return n.stream('exec', N.exec(deskId, command, o), { stdin: o.stdin, signal: o.signal });
-    const args = A.execArgs(deskId, command, { ...o, stdin: o.stdin !== undefined }, false);
+    const shape = { ...o, stdin: o.stdin !== undefined };
+    const plain = A.execArgs(deskId, command, shape, false);
     const input = o.stdin === true ? undefined : o.stdin;
-    return new CliStream(this.inv(args, input, o.signal), o.stdin === true);
+    const keepOpen = o.stdin === true;
+    const start = (async (): Promise<OutputStream> => {
+      const f = await this.features();
+      if (o.cwd !== undefined && !f.has('exec_cwd')) await this.require('exec_cwd');
+      if (f.has('exec_json_stream')) return new JsonExecStream(this.inv(A.execArgs(deskId, command, shape, 'stream'), input, o.signal), keepOpen);
+      return new CliStream(this.inv(plain, input, o.signal), keepOpen);
+    })();
+    return new DeferredStream(plain, start);
   }
 
   /**
@@ -290,7 +358,7 @@ export class GaiaDesk {
    * shell over plain pipes (handed whole to the shell on macOS/Linux; on
    * Windows cmd.exe reads it line by line). The exit code is the script's.
    */
-  async shell(deskId: string, script: string, o: Omit<ExecOptions, 'stdin'> = {}): Promise<ExecResult> {
+  async shell(deskId: string, script: string, o: Omit<ExecOptions, 'stdin' | 'cwd'> = {}): Promise<ExecResult> {
     const n = this.nat();
     if (n) return n.exec('shell', N.shell(deskId, script, o), { signal: o.signal, check: o.check });
     const args = A.shellArgs(deskId, o, true);
@@ -328,18 +396,25 @@ export class GaiaDesk {
 
   // ───────────────────────────── jobs ─────────────────────────────
 
-  /** `run --detach --json`: start a named background job that outlives this connection. */
-  runJob(deskId: string, name: string, command: string | readonly string[], o: A.JobOptions & CallOptions = {}): Promise<JobInfo> {
+  /**
+   * `run --detach --json`: start a named background job that outlives this
+   * connection. `cwd` (the directory it starts in) needs gaiadesk-cli
+   * 0.10.324+ (feature `run_cwd`) or the native library.
+   */
+  async runJob(deskId: string, name: string, command: string | readonly string[], o: A.JobOptions & CallOptions = {}): Promise<JobInfo> {
     const n = this.nat();
     if (n) return n.call<JobInfo>('job_run', N.runJob(deskId, name, command, o), o);
-    return this.op<JobInfo>(A.runArgs(deskId, name, command, o), [0], o);
+    const args = A.runArgs(deskId, name, command, o);
+    if (o.cwd !== undefined) await this.require('run_cwd');
+    return this.op<JobInfo>(args, [0], o);
   }
 
-  /** `ps --json`. */
-  jobs(deskId: string, c: CallOptions = {}): Promise<JobInfo[]> {
+  /** `ps --json`: `{"jobs": [...]}` (0.10.324+) or an older CLI's bare array, as the list. */
+  async jobs(deskId: string, c: CallOptions = {}): Promise<JobInfo[]> {
     const n = this.nat();
-    if (n) return n.call<JobInfo[]>('job_list', N.desk(deskId), c);
-    return this.op<JobInfo[]>(A.psArgs(deskId), [0], c);
+    if (n) return listOf<JobInfo>(await n.call('job_list', N.desk(deskId), c), 'jobs', ['job_list']);
+    const args = A.psArgs(deskId);
+    return listOf<JobInfo>(await this.op<unknown>(args, [0], c), 'jobs', args);
   }
 
   /** `kill --json`: stop a job and everything it started. */
@@ -352,7 +427,7 @@ export class GaiaDesk {
   /** `logs <job>` (no --json exists): the job's output so far, stdout and stderr together. */
   async jobLogs(deskId: string, name: string, o: { tail?: number } & CallOptions = {}): Promise<string> {
     const n = this.nat();
-    if (n) return n.call<string>('job_logs', N.logs(deskId, name, o.tail), o);
+    if (n) return textOf(await n.call('job_logs', N.logs(deskId, name, o.tail), o), 'output');
     const args = A.logsArgs(deskId, name, { tail: o.tail });
     const done = await runCli(this.inv(args, undefined, o.signal));
     if (done.code !== 0) throw this.failure(done, args, undefined);
@@ -394,11 +469,12 @@ export class GaiaDesk {
     return this.op<TokenCreateResult>(A.tokenCreateArgs(o), [0], o);
   }
 
-  /** `token list --json` (owner only). */
-  listTokens(deskId: string, c: CallOptions = {}): Promise<TokenInfo[]> {
+  /** `token list --json` (owner only): `{"tokens": [...]}` (0.10.324+) or an older CLI's bare array, as the list. */
+  async listTokens(deskId: string, c: CallOptions = {}): Promise<TokenInfo[]> {
     const n = this.nat();
-    if (n) return n.call<TokenInfo[]>('token_list', N.desk(deskId), c);
-    return this.op<TokenInfo[]>(A.tokenListArgs(deskId), [0], c);
+    if (n) return listOf<TokenInfo>(await n.call('token_list', N.desk(deskId), c), 'tokens', ['token_list']);
+    const args = A.tokenListArgs(deskId);
+    return listOf<TokenInfo>(await this.op<unknown>(args, [0], c), 'tokens', args);
   }
 
   /**
@@ -412,11 +488,12 @@ export class GaiaDesk {
     return this.op<TokenRevokeResult | AccountRevokeResult>(A.tokenRevokeArgs(deskId, which, !!o.account), [0], o);
   }
 
-  /** `audit --json`: what agent tokens did on the desk, newest first. */
-  audit(deskId: string, o: { token?: string; limit?: number; account?: boolean } & CallOptions = {}): Promise<AuditEvent[]> {
+  /** `audit --json`: what agent tokens did on the desk, newest first (`{"events": [...]}` or a bare array, as the list). */
+  async audit(deskId: string, o: { token?: string; limit?: number; account?: boolean } & CallOptions = {}): Promise<AuditEvent[]> {
     const n = this.nat();
-    if (n) return n.call<AuditEvent[]>('audit', N.audit(deskId, o), o);
-    return this.op<AuditEvent[]>(A.auditArgs(deskId, o), [0], o);
+    if (n) return listOf<AuditEvent>(await n.call('audit', N.audit(deskId, o), o), 'events', ['audit']);
+    const args = A.auditArgs(deskId, o);
+    return listOf<AuditEvent>(await this.op<unknown>(args, [0], o), 'events', args);
   }
 
   // ───────────────────────────── mesh / connections ─────────────────────────────
@@ -431,7 +508,7 @@ export class GaiaDesk {
   /** `mesh ip <desk>` (plain text; no --json exists). */
   async meshIp(deskId: string, c: CallOptions = {}): Promise<string> {
     const n = this.nat();
-    if (n) return n.call<string>('mesh_ip', N.desk(deskId), c);
+    if (n) return textOf(await n.call('mesh_ip', N.desk(deskId), c), 'mesh_ip');
     const args = ['mesh', 'ip', A.checkDesk(deskId)];
     const done = await runCli(this.inv(args, undefined, c.signal));
     if (done.code !== 0) throw this.failure(done, args, undefined);
@@ -524,8 +601,8 @@ export class GaiaDesk {
 
   /**
    * Start `gaiadesk-cli mcp` (stdio) and return a client for it: the way to
-   * use the screen tools (gaiadesk.open_session, screenshot, click, ...) from
-   * code. Desk tools there use tokenFile/code; screen tools need agentToken.
+   * use the screen tools (gaiadesk_open_session, gaiadesk_screenshot,
+   * gaiadesk_click, ...) from code. Desk tools there use tokenFile/code; screen tools need agentToken.
    */
   mcp(o: A.McpServerOptions = {}): McpClient {
     return new McpClient(this.inv(A.mcpArgs(o, this.opts.server)));

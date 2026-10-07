@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 
 import { CliNotFoundError, GaiaDeskError } from './errors.js';
-import type { AbortSignalLike } from './types.js';
+import type { AbortSignalLike, CliError, ExecExit } from './types.js';
 
 export interface Invocation {
   /** The program and any arguments that come before gaiadesk-cli's own. */
@@ -124,6 +124,14 @@ export interface Exit {
   signal: string | null;
   /** The last line gaiadesk-cli wrote on stderr (its reason, when it failed). */
   stderrTail: string;
+  /**
+   * How the command ended, without its output (execStream / shellStream when
+   * the backend reports it: gaiadesk-cli 0.10.324+ via `--json-stream`, and the
+   * native library). Absent from a plain stream and when the command never ran.
+   */
+  result?: ExecExit;
+  /** Why it never ran or was stopped (`{kind, message, reason?, desk?}`), when the backend said. */
+  error?: CliError;
 }
 
 /**

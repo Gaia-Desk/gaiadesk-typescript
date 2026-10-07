@@ -26,8 +26,8 @@ import { LOST, OFFLINE, OK, REFUSED, USAGE, makeMock } from './fixtures/mock-nat
 const FAKE = fileURLToPath(new URL('./fixtures/fake-cli.js', import.meta.url));
 const BASE_ENV = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot };
 
-function nativeGd(opts: GaiaDeskOptions = {}) {
-  const m = makeMock();
+function nativeGd(opts: GaiaDeskOptions = {}, mock: { old?: boolean } = {}) {
+  const m = makeMock(mock);
   const gd = new GaiaDesk({ native: m.module, env: { ...BASE_ENV }, ...opts });
   return { gd, ...m };
 }
@@ -89,16 +89,16 @@ test('every other operation maps to its op', async () => {
   await gd.upload('./a', OK, 'b/', { recursive: true });
   await gd.download(OK, 'b', './a');
   await gd.runJob(OK, 'build', 'make', { priority: 'low', cpu: 50, mem: '4G', keepAwake: true });
-  await gd.jobs(OK);
+  assert.deepEqual((await gd.jobs(OK)).map((j) => j.name), ['build']);
   assert.equal(await gd.jobLogs(OK, 'build', { tail: 100 }), 'line 1\nline 2\n');
   await gd.killJob(OK, 'build');
   await gd.stats(OK);
   await gd.measure(OK, { count: 3 });
   await gd.createToken({ desks: [OK], name: 'bot', scopes: ['exec'], lowPriv: true });
-  await gd.listTokens(OK);
+  assert.equal((await gd.listTokens(OK))[0].label, 'bot');
   await gd.revokeToken(OK, { all: true });
   assert.deepEqual(await gd.revokeToken(OK, 'bot', { account: true }), { desk: OK, ok: true, message: 'revoked' });
-  await gd.audit(OK, { limit: 5 });
+  assert.equal((await gd.audit(OK, { limit: 5 }))[0].action, 'exec.end');
   await gd.meshStatus();
   assert.equal(await gd.meshIp(OK), '100.64.0.1');
   await gd.disconnect(OK);
@@ -110,6 +110,60 @@ test('every other operation maps to its op', async () => {
   assert.deepEqual(byOp.upload, { desk_id: OK, local: './a', remote: 'b/', recursive: true });
   assert.deepEqual(byOp.job_logs, { desk_id: OK, name: 'build', tail: 100 });
   assert.equal(calls.filter((c) => c.op === 'disconnect').length, 2);
+});
+
+test('an older native build: bare lists and plain strings read the same', async () => {
+  const { gd } = nativeGd({}, { old: true });
+  assert.deepEqual((await gd.jobs(OK)).map((j) => j.name), ['build']);
+  assert.equal((await gd.listTokens(OK))[0].label, 'bot');
+  assert.equal((await gd.audit(OK))[0].action, 'exec.end');
+  assert.equal(await gd.jobLogs(OK, 'build'), 'line 1\nline 2\n');
+  assert.equal(await gd.meshIp(OK), '100.64.0.1');
+  await assert.rejects(gd.exec(OFFLINE, 'x'), (e: unknown) => e instanceof UnreachableError && e.kind === 'offline' && e.desk === null);
+});
+
+test('cwd: exec, streams and jobs pass it to the native library', async () => {
+  const { gd, calls } = nativeGd();
+  const r = await gd.exec(OK, 'make', { cwd: '/srv/app' });
+  assert.equal(r.stdout, 'ran: make\nin: /srv/app\n');
+  assert.equal(calls[0].args.cwd, '/srv/app');
+  await gd.runJob(OK, 'build', 'make', { cwd: 'src' });
+  assert.deepEqual(calls[1].args, { desk_id: OK, name: 'build', command: 'make', limits: {}, cwd: 'src' });
+  const s = gd.execStream(OK, 'make', { cwd: '/srv' });
+  let out = '';
+  for await (const c of s.text()) if (c.stream === 'stdout') out += c.text;
+  assert.equal(out, 'part1 part2 make\nin: /srv\n');
+  assert.equal(calls[2].args.cwd, '/srv');
+  await assert.rejects(gd.exec(OK, 'x', { cwd: '' }), UsageError);
+});
+
+test('errors carry the envelope: kind, reason and desk', async () => {
+  const { gd } = nativeGd();
+  await assert.rejects(gd.exec(OFFLINE, 'x'), (e: unknown) => {
+    assert.ok(e instanceof UnreachableError);
+    assert.equal(e.kind, 'offline');
+    assert.equal(e.reason, 'offline');
+    assert.equal(e.desk, OFFLINE);
+    assert.deepEqual(e.json, { error: { kind: 'unreachable', message: `desk ${OFFLINE} is offline (last seen 4 min ago)`, reason: 'offline', desk: OFFLINE } });
+    return true;
+  });
+  await assert.rejects(gd.killJob(OK, 'nope'), (e: unknown) => e instanceof OperationFailedError && e.desk === OK);
+});
+
+test('streams: the exit carries the run result and error', async () => {
+  const { gd } = nativeGd();
+  const exit = await gd.execStream(OK, 'exit 4').wait();
+  assert.equal(exit.exitCode, 4);
+  assert.equal(exit.result?.remote_code, 4);
+  assert.equal(exit.result?.error, null);
+  const t = await gd.execStream(OK, 'sleep').wait();
+  assert.equal(t.result?.timed_out, true);
+  assert.deepEqual(t.error, { kind: 'failed', message: 'the command ran past --timeout and was stopped' });
+  assert.equal(t.stderrTail, 'the command ran past --timeout and was stopped');
+  const old = await nativeGd({}, { old: true }).gd.execStream(OK, 'sleep').wait();
+  assert.deepEqual(old.error, { kind: 'failed', message: 'timed out' }, "an older build's text error, in today's shape");
+  const refused = await gd.execStream(REFUSED, 'x').wait();
+  assert.equal(refused.error?.kind, 'refused');
 });
 
 test('streams: chunks, then the exit; stdin kept open; kill stops the remote side', async () => {

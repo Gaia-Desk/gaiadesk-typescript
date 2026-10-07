@@ -26,9 +26,12 @@ test('the public entry point exports the client, the errors and the MCP helpers'
     'toolNameAlias',
     'resolveToolName',
     'errorEnvelope',
+    'parseVersionInfo',
+    'parseExecEvent',
   ]) {
     assert.equal(typeof (sdk as Record<string, unknown>)[name], 'function', name);
   }
   assert.equal(sdk.MCP_PROTOCOL_VERSION, '2026-07-28');
+  assert.ok(sdk.GAIADESK_TOOLS.includes('gaiadesk_exec'));
   assert.ok(new sdk.RefusedError('x') instanceof sdk.GaiaDeskError);
 });

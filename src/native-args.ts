@@ -20,9 +20,11 @@ function shape(o: A.RunShapeOptions): Args {
 
 const command = (c: string | readonly string[]) => (typeof c === 'string' ? c : [...c]);
 
-export function exec(deskId: string, cmd: string | readonly string[], o: A.RunShapeOptions): Args {
+export function exec(deskId: string, cmd: string | readonly string[], o: A.RunShapeOptions & { cwd?: string }): Args {
   A.execArgs(deskId, cmd, o, true);
-  return { desk_id: A.checkDesk(deskId), command: command(cmd), ...shape(o) };
+  const a: Args = { desk_id: A.checkDesk(deskId), command: command(cmd), ...shape(o) };
+  if (o.cwd !== undefined) a.cwd = o.cwd;
+  return a;
 }
 
 export function shell(deskId: string, script: string, o: A.RunShapeOptions): Args {
@@ -63,7 +65,9 @@ export function runJob(deskId: string, name: string, cmd: string | readonly stri
   if (o.cpu !== undefined) limits.cpu_percent = o.cpu;
   if (o.mem !== undefined) limits.mem_mb = memMb(o.mem);
   if (o.keepAwake !== undefined) limits.keep_awake = o.keepAwake;
-  return { desk_id: A.checkDesk(deskId), name, command: command(cmd), limits };
+  const a: Args = { desk_id: A.checkDesk(deskId), name, command: command(cmd), limits };
+  if (o.cwd !== undefined) a.cwd = o.cwd;
+  return a;
 }
 
 export function job(deskId: string, name: string): Args {

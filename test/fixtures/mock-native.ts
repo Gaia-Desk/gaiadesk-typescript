@@ -1,10 +1,16 @@
 // A stand-in for @gaiadesk/sdk-native (the native backend), for the tests:
 // the same fake desks as fake-cli.ts, answering with the same JSON shapes,
-// failing with the native library's errors ({kind, reason, json}). Every call
-// is recorded in `calls`.
+// failing with the native library's errors ({kind, reason, json}, `json`
+// being the error envelope {"error": {kind, message, reason?, desk?}}).
+// Every call is recorded in `calls`.
 //
-// Desk ids: 100000001 fine; 100000002 offline; 100000003 refuses;
-// 100000004 usage error; 100000005 connection lost.
+// makeMock() answers as @gaiadesk/sdk-native 0.10.324+ (the CLI's 0.10.324
+// shapes: {"jobs"}, {"tokens"}, {"events"}, {"job", "output"}, {"mesh_ip"});
+// makeMock({ old: true }) as an older build (bare arrays and strings, exec
+// errors as text, no envelope on errors).
+//
+// Desk ids: 123456789 fine; offline-desk offline; refused-desk refuses;
+// usage-desk usage error; lost-desk connection lost.
 import type {
   NativeCallOptions,
   NativeClientLike,
@@ -15,11 +21,11 @@ import type {
   NativeOutputStream,
 } from '../../dist/index.js';
 
-export const OK = '100000001';
-export const OFFLINE = '100000002';
-export const REFUSED = '100000003';
-export const USAGE = '100000004';
-export const LOST = '100000005';
+export const OK = '123456789';
+export const OFFLINE = 'offline-desk';
+export const REFUSED = 'refused-desk';
+export const USAGE = 'usage-desk';
+export const LOST = 'lost-desk';
 
 type Json = Record<string, any>;
 
@@ -30,25 +36,29 @@ export interface Call {
   signal?: boolean;
 }
 
-function nativeError(kind: string, message: string, reason?: string, json?: unknown): Error {
-  return Object.assign(new Error(message), { name: 'NativeError', kind, reason: reason ?? null, json });
+/** Which build the mock answering now plays (set on entry to each of its methods). */
+let OLD = false;
+
+function nativeError(kind: string, message: string, reason?: string, json?: unknown, desk?: string): Error {
+  const envelope = OLD ? undefined : { error: { kind, message, ...(reason ? { reason } : {}), ...(desk ? { desk } : {}) } };
+  return Object.assign(new Error(message), { name: 'NativeError', kind, reason: reason ?? null, json: json ?? envelope });
 }
 
 function reach(desk: string): void {
-  if (desk === OFFLINE) throw nativeError('unreachable', `desk ${desk} is offline (last seen 4 min ago)`, 'offline');
-  if (desk === REFUSED) throw nativeError('refused', 'this agent token does not have the `exec` scope');
+  if (desk === OFFLINE) throw nativeError('unreachable', `desk ${desk} is offline (last seen 4 min ago)`, 'offline', undefined, desk);
+  if (desk === REFUSED) throw nativeError('refused', 'this agent token does not have the `exec` scope', undefined, undefined, desk);
   if (desk === USAGE) throw nativeError('usage', 'no credential: set GAIADESK_TOKEN_FILE or GAIADESK_CODE');
-  if (desk === LOST) throw nativeError('connection_lost', `the connection to desk ${desk} was lost`);
+  if (desk === LOST) throw nativeError('connection_lost', `the connection to desk ${desk} was lost`, undefined, undefined, desk);
 }
 
 const text = (d: string | Uint8Array | undefined) => (d === undefined ? undefined : typeof d === 'string' ? d : Buffer.from(d).toString('utf8'));
 
-function execResult(desk: string, line: string, stdin?: string): Json {
+function execResult(desk: string, line: string, stdin?: string, cwd?: string): Json {
   const exit = /^exit (\d+)$/.test(line) ? Number(line.slice(5)) : line === 'sleep' ? 124 : 0;
   return {
     exit,
     remote_code: exit,
-    stdout: `ran: ${line}\n${stdin ? `stdin: ${stdin}\n` : ''}`,
+    stdout: `ran: ${line}\n${cwd ? `in: ${cwd}\n` : ''}${stdin ? `stdin: ${stdin}\n` : ''}`,
     stderr: 'warn\n',
     duration_ms: 12,
     desk,
@@ -111,7 +121,8 @@ class MockStream implements NativeOutputStream {
   }
 }
 
-export function makeMock() {
+export function makeMock(o: { old?: boolean } = {}) {
+  const old = !!o.old;
   const calls: Call[] = [];
   const clients: NativeClientOptions[] = [];
   const streams: MockStream[] = [];
@@ -124,6 +135,7 @@ export function makeMock() {
     }
 
     async call(op: string, args: Json = {}, o: NativeCallOptions = {}): Promise<unknown> {
+      OLD = old;
       calls.push({ op, args, input: text(o.input), signal: !!o.signal });
       if (o.signal?.aborted) throw nativeError('interrupted', 'interrupted');
       const d = args.desk_id as string;
@@ -134,7 +146,7 @@ export function makeMock() {
           return { devices: [{ desk_id: OK, name: 'office-pc', online: true, reachable: args.probe ? true : null }], sources: ['account'], notes: [] };
         case 'exec':
           reach(d);
-          return execResult(d, typeof args.command === 'string' ? args.command : args.command.join(' '), text(o.input));
+          return execResult(d, typeof args.command === 'string' ? args.command : args.command.join(' '), text(o.input), args.cwd);
         case 'shell':
           reach(d);
           return execResult(d, `script:${args.script.trim()}`);
@@ -143,22 +155,24 @@ export function makeMock() {
           reach(d);
           const failed = String(args.local).includes('fail') || String(args.remote).includes('fail') ? [{ path: 'a.txt', message: 'permission denied' }] : [];
           const sum = { direction: op, desk: d, destination: op === 'upload' ? args.remote : args.local, files: 2, dirs: args.recursive ? 1 : 0, bytes: 2048, resumed_bytes: 0, failed, seconds: 0.5 };
-          if (failed.length) throw nativeError('failed', '1 file failed to copy', undefined, sum);
+          if (failed.length) throw nativeError('failed', '1 file failed to copy', undefined, sum, d);
           return sum;
         }
         case 'job_run':
           reach(d);
           return { name: args.name, command: args.command, state: 'running', pid: 4242, started_at_ms: 1700000000000, log_bytes: 0, by: 'owner' };
-        case 'job_list':
+        case 'job_list': {
           reach(d);
-          return [];
+          const jobs = [{ name: 'build', command: 'make', state: 'running', started_at_ms: 1, log_bytes: 0, by: 'owner' }];
+          return OLD ? jobs : { jobs };
+        }
         case 'job_kill':
           reach(d);
-          if (args.name === 'nope') throw nativeError('failed', 'no job named nope');
+          if (args.name === 'nope') throw nativeError('failed', 'no job named nope', undefined, undefined, d);
           return { name: args.name, command: 'make', state: 'killed', started_at_ms: 1, log_bytes: 0, by: 'owner' };
         case 'job_logs':
           reach(d);
-          return 'line 1\nline 2\n';
+          return OLD ? 'line 1\nline 2\n' : { job: { name: args.name, command: 'make', state: 'running', started_at_ms: 1 }, output: 'line 1\nline 2\n' };
         case 'stats':
           reach(d);
           return { desk: d, hostname: 'office-pc', os: 'windows', os_version: '11', cpu_percent: 3, cpus: 8, load: null, mem_total_mb: 1, mem_free_mb: 1, disks: [], uptime_secs: 1, jobs_running: 0 };
@@ -167,16 +181,20 @@ export function makeMock() {
           return { desk: d, sent: args.count ?? 10, rtt_ms: null, clock_offset_ms: null, clock_uncertainty_ms: null };
         case 'token_mint':
           return { tokens: args.desks.map((k: string) => ({ desk: k, token: { label: args.name ?? 'agent', id: 't1', scopes: args.scopes ?? [], issued_at_ms: 1, expires_at_ms: 2, revoked: false }, secret: 'gdagt_x' })) };
-        case 'token_list':
-          return [];
+        case 'token_list': {
+          const tokens = [{ label: 'bot', id: 't1', scopes: ['exec'], issued_at_ms: 1, expires_at_ms: 2, revoked: false }];
+          return OLD ? tokens : { tokens };
+        }
         case 'token_revoke':
           return args.account ? { desk: d, ok: true, message: 'revoked' } : { revoked: args.which ?? 'all', stopped_sessions: 0 };
-        case 'audit':
-          return [];
+        case 'audit': {
+          const events = [{ at_ms: 5, desk: d, token: 'bot', token_id: 't1', action: 'exec.end', detail: 'make test', bytes: 0, exit_code: 0 }];
+          return OLD ? events : { events };
+        }
         case 'mesh_status':
           return { self: null, peers: [] };
         case 'mesh_ip':
-          return '100.64.0.1';
+          return OLD ? '100.64.0.1' : { desk_id: d, mesh_ip: '100.64.0.1', renamed_to: null };
         case 'disconnect':
           return null;
         default:
@@ -185,6 +203,7 @@ export function makeMock() {
     }
 
     async stream(op: string, args: Json, o: { signal?: unknown; stdin?: string | Uint8Array | true } = {}): Promise<NativeOutputStream> {
+      OLD = old;
       calls.push({ op: `stream:${op}`, args, input: o.stdin === true ? '<open>' : text(o.stdin) });
       reach(args.desk_id);
       const s = new MockStream();
@@ -202,9 +221,11 @@ export function makeMock() {
       if (o.stdin === true) return s; // shell/exec with stdin open: output on end()
       const line = op === 'shell' ? 'shell' : typeof args.command === 'string' ? args.command : args.command.join(' ');
       setTimeout(() => {
-        s.push({ type: 'stdout', data: Buffer.from(`part1 part2 ${line}\n`) });
+        s.push({ type: 'stdout', data: Buffer.from(`part1 part2 ${line}\n${args.cwd ? `in: ${args.cwd}\n` : ''}`) });
         s.push({ type: 'stderr', data: Buffer.from('warn\n') });
-        s.push({ type: 'exit', result: execResult(args.desk_id, line) });
+        const { stdout: _o, stderr: _e, truncated: _t, ...exit } = execResult(args.desk_id, line);
+        if (line === 'sleep') Object.assign(exit, { timed_out: true, remote_code: null, error: OLD ? 'timed out' : { kind: 'failed', message: 'the command ran past --timeout and was stopped' } });
+        s.push({ type: 'exit', result: exit });
         s.finish();
       }, 5);
       return s;
@@ -213,6 +234,7 @@ export function makeMock() {
     desk(id: string) {
       return {
         forward: async (specs: Json[]): Promise<NativeForwardHandle> => {
+          OLD = old;
           calls.push({ op: 'forward', args: { desk_id: id, specs } });
           reach(id);
           let resolveDone!: (v: Json) => void;
@@ -227,6 +249,7 @@ export function makeMock() {
           };
         },
         screen: async () => {
+          OLD = old;
           calls.push({ op: 'screen', args: { desk_id: id } });
           reach(id);
           return { screenshot: async () => ({ png: Buffer.from('png'), width: 1280, height: 800 }), close: async () => {} };

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MCP_PROTOCOL_VERSION, resolveToolName, toolNameAlias } from '../dist/index.js';
+import { GAIADESK_TOOLS, MCP_PROTOCOL_VERSION, resolveToolName, toolNameAlias } from '../dist/index.js';
 import { withProtocolMeta } from '../dist/mcp.js';
 
 test('withProtocolMeta adds the two fields; the caller wins', () => {
@@ -16,6 +16,17 @@ test('withProtocolMeta adds the two fields; the caller wins', () => {
     'io.modelcontextprotocol/clientCapabilities': {},
     progressToken: 7,
   });
+});
+
+test('GAIADESK_TOOLS: the gaiadesk_* names of gaiadesk-cli 0.10.324+', () => {
+  assert.equal(GAIADESK_TOOLS.length, 21);
+  for (const t of GAIADESK_TOOLS) assert.match(t, /^gaiadesk_[a-z_]+$/, t);
+  for (const t of ['gaiadesk_exec', 'gaiadesk_copy_files', 'gaiadesk_job_run', 'gaiadesk_forward_stop', 'gaiadesk_open_session', 'gaiadesk_screenshot', 'gaiadesk_pointer_position']) {
+    assert.ok((GAIADESK_TOOLS as readonly string[]).includes(t), t);
+  }
+  // An older, dotted-name server is reached from these names.
+  const dotted = new Set(GAIADESK_TOOLS.map((t) => toolNameAlias(t) as string));
+  for (const t of GAIADESK_TOOLS) assert.equal(resolveToolName(t, dotted), t.replace('gaiadesk_', 'gaiadesk.'));
 });
 
 test('toolNameAlias: dot <-> underscore, GaiaDesk tools only', () => {

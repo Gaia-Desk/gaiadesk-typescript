@@ -1,8 +1,11 @@
 // The native backend against a REAL @gaiadesk/sdk-native build: its test
-// backend (fake desks with the same ids as fake-cli.ts) behind the real
-// binary. Skipped unless GAIADESK_SDK_NATIVE_MODULE names the package
-// directory (with its gaiadesk.<platform>.node beside package.json), e.g.
-//   GAIADESK_SDK_NATIVE_MODULE=/path/to/sdk-native npm test
+// backend (fake desks) behind the real binary. Skipped unless
+// GAIADESK_SDK_NATIVE_MODULE names the package directory (with its
+// gaiadesk.<platform>.node beside package.json) and
+// GAIADESK_SDK_NATIVE_DESKS lists the test backend's desk ids, in this order:
+// fine, offline, refuses, rejects the arguments. E.g.
+//   GAIADESK_SDK_NATIVE_MODULE=/path/to/sdk-native \
+//   GAIADESK_SDK_NATIVE_DESKS=<ok>,<offline>,<refused>,<usage> npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -14,8 +17,8 @@ import { GaiaDesk, OperationFailedError, RefusedError, UnreachableError, UsageEr
 import type { NativeModule } from '../dist/index.js';
 
 const where = process.env.GAIADESK_SDK_NATIVE_MODULE;
-const skip = where ? false : 'GAIADESK_SDK_NATIVE_MODULE is not set';
-const OK = '100000001';
+const [OK = '', OFFLINE = '', REFUSED = '', USAGE = ''] = (process.env.GAIADESK_SDK_NATIVE_DESKS ?? '').split(',').map((d) => d.trim());
+const skip = !where ? 'GAIADESK_SDK_NATIVE_MODULE is not set' : !USAGE ? 'GAIADESK_SDK_NATIVE_DESKS is not set' : false;
 
 function gd(extra: Record<string, unknown> = {}): GaiaDesk {
   const mod = createRequire(import.meta.url)(where as string) as NativeModule;
@@ -36,9 +39,9 @@ test('real binary: exec, shell and results', { skip }, async () => {
 
 test('real binary: errors map to the SDK classes and kinds', { skip }, async () => {
   const g = gd();
-  await assert.rejects(g.exec('100000002', 'x'), (e: unknown) => e instanceof UnreachableError && e.kind === 'offline');
-  await assert.rejects(g.exec('100000003', 'x'), (e: unknown) => e instanceof RefusedError && e.kind === 'refused' && e.exitCode === 254);
-  await assert.rejects(g.exec('100000004', 'x'), (e: unknown) => e instanceof UsageError);
+  await assert.rejects(g.exec(OFFLINE, 'x'), (e: unknown) => e instanceof UnreachableError && e.kind === 'offline');
+  await assert.rejects(g.exec(REFUSED, 'x'), (e: unknown) => e instanceof RefusedError && e.kind === 'refused' && e.exitCode === 254);
+  await assert.rejects(g.exec(USAGE, 'x'), (e: unknown) => e instanceof UsageError);
   const dir = mkdtempSync(join(tmpdir(), 'gd-sdk-real-'));
   writeFileSync(join(dir, 'a.txt'), 'hello');
   const c = gd({ cwd: dir });

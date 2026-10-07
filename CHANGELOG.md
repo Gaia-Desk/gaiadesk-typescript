@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased: gaiadesk-cli 0.10.324
+
+- Result types are generated from GaiaDesk's JSON Schema of every `--json`
+  shape (`src/types.generated.ts`). The public names (`ExecResult`,
+  `JobInfo`, `DeskStats`, `TokenInfo`, ...) are kept as aliases; every schema
+  type is also exported in the `Schema` namespace, and `CliError`,
+  `CliErrorKind`, `CliErrorEnvelope`, `ExecEvent`, `ExecExit`, `VersionInfo`,
+  `JobList`, `TokenList`, `AuditLog`, `JobLogs` are new. `ExecResult.error`
+  is now always `null` or `{kind, message, reason?, desk?}` (an older CLI's
+  text error is converted).
+- Errors: the one error envelope of 0.10.324,
+  `{"error": {kind, message, reason?, desk?}}`, is read for every command;
+  the older shapes still are. The class follows the envelope's kind
+  (`failed` is `OperationFailedError`, `protocol` is `ProtocolError`); the
+  SDK `kind` is the `reason` when it is an SDK kind, so `offline` stays
+  `offline`. Every error has `reason` and `desk` (null when not given),
+  on both backends.
+- `cwd` option for `exec`, `execStream` and `runJob` (`--cwd` on the CLI,
+  `cwd` on the native library). On a CLI without the `exec_cwd` / `run_cwd`
+  feature it is a `UsageError`, never ignored.
+- `execStream` runs `exec --json-stream` on a CLI with `exec_json_stream`:
+  the same chunks, and `wait()`'s exit carries the run's `result` (an
+  `ExecExit`) and `error`. Older CLIs: plain `exec`, as before. Native
+  streams fill `result` / `error` too.
+- Feature detection: `versionInfo()` (`--version --json`, null on an older
+  CLI) and `features()`, asked once per CLI path.
+- `jobs()`, `listTokens()` and `audit()` accept `{"jobs"}` / `{"tokens"}` /
+  `{"events"}` objects and bare arrays; on the native backend `jobLogs()`
+  and `meshIp()` accept `{output}` / `{mesh_ip}` objects and strings.
+- MCP: `GAIADESK_TOOLS` lists the `gaiadesk_*` tool names of 0.10.324;
+  docs and examples use them. `callTool` still sends the spelling the server
+  advertises, so they reach older, dotted-name CLIs.
+- Tests: the fake CLI plays a 0.10.324 CLI and an older one, and the shared
+  behaviour runs against both; the native mock plays a current and an older
+  build. Example desk ids are 123456789 / 234567890 / 345678901 only; the
+  real-binary test takes its stub desk ids from `GAIADESK_SDK_NATIVE_DESKS`.
+
 ## 0.1.0 (unreleased)
 
 - A native backend: when `@gaiadesk/sdk-native` (an optional dependency,

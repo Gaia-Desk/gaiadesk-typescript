@@ -1,8 +1,10 @@
 // The native backend: GaiaDesk's client library as a prebuilt binary
 // (`@gaiadesk/sdk-native`, an optional dependency), used instead of spawning
 // gaiadesk-cli when it is installed. Same public API, same result shapes (the
-// binary returns the CLI's --json objects) and the same error classes and
-// kinds. This file is the only place that knows the native package's surface.
+// binary returns the CLI's --json objects: the 0.10.324+ shapes from
+// @gaiadesk/sdk-native 0.10.324, read here so older builds' shapes come out
+// the same) and the same error classes and kinds. This file is the only place
+// that knows the native package's surface.
 
 import { createRequire } from 'node:module';
 
@@ -13,12 +15,16 @@ import {
   OperationFailedError,
   ProtocolError,
   RefusedError,
+  SDK_KINDS,
   UnreachableError,
   UsageError,
+  errorEnvelope,
+  errorForKind,
 } from './errors.js';
 import type { ErrorDetails, ErrorKind } from './errors.js';
 import type { Chunk, Exit, OutputStream } from './proc.js';
-import type { AbortSignalLike, ExecResult } from './types.js';
+import { execError, neverRan, normalizeExecResult } from './results.js';
+import type { AbortSignalLike, ExecExit, ExecResult } from './types.js';
 
 // ───────────────────────────── the native package, structurally ─────────────────────────────
 
@@ -91,11 +97,6 @@ export function loadNative(req: (id: string) => unknown = createRequire(import.m
 
 // ───────────────────────────── errors ─────────────────────────────
 
-const SDK_KINDS: ReadonlySet<string> = new Set([
-  'usage', 'offline', 'unknown_desk', 'not_online', 'refused', 'network', 'not_signed_in', 'timeout',
-  'connection_lost', 'local', 'failed', 'interrupted', 'protocol', 'unreachable',
-]);
-
 /** gaiadesk-cli's exit code for the same failure (exitCode on the error). */
 export function exitFor(kind: string): number {
   if (kind === 'refused') return 254;
@@ -109,15 +110,20 @@ export function exitFor(kind: string): number {
  * The SDK error for a native one: the class from its `kind` (the same class
  * the CLI backend throws), the SDK kind from its finer `reason` when it has
  * one (`offline`, `unknown_desk`, ...), so both backends report the same kinds.
+ * `json` is the error envelope `{"error": {kind, message, reason?, desk?}}`
+ * (or, for a copy with failed files, the summary); its `desk` is carried.
  */
 export function fromNative(e: unknown, op: string): GaiaDeskError {
   if (e instanceof GaiaDeskError) return e;
-  const n = (e ?? {}) as { kind?: unknown; reason?: unknown; json?: unknown; message?: unknown };
+  const n = (e ?? {}) as { kind?: unknown; reason?: unknown; json?: unknown; message?: unknown; desk?: unknown };
   const message = typeof n.message === 'string' ? n.message : String(e);
   const kind = typeof n.kind === 'string' ? n.kind : 'protocol';
-  const reason = typeof n.reason === 'string' && SDK_KINDS.has(n.reason) ? n.reason : undefined;
+  const env = errorEnvelope(n.json);
+  const rawReason = typeof n.reason === 'string' ? n.reason : env?.reason;
+  const reason = rawReason !== undefined && SDK_KINDS.has(rawReason) ? rawReason : undefined;
   const sdkKind = (reason ?? (SDK_KINDS.has(kind) ? kind : 'protocol')) as ErrorKind;
-  const d: ErrorDetails = { kind: sdkKind, exitCode: exitFor(kind), argv: [op], json: n.json ?? undefined };
+  const desk = typeof n.desk === 'string' ? n.desk : env?.desk;
+  const d: ErrorDetails = { kind: sdkKind, exitCode: exitFor(kind), argv: [op], json: n.json ?? undefined, reason: rawReason ?? null, desk: desk ?? null };
   switch (kind) {
     case 'usage':
       return new UsageError(message, d);
@@ -168,8 +174,10 @@ export class NativeStream implements OutputStream {
       for await (const ev of s) {
         if (ev.type === 'exit') {
           const code = typeof ev.result.exit === 'number' ? ev.result.exit : 0;
-          const err = typeof ev.result.error === 'string' ? ev.result.error : '';
-          exit = { exitCode: code, signal: null, stderrTail: lastLine(this.tail) || err };
+          const error = execError(ev.result.error, ev.result.exit);
+          exit = { exitCode: code, signal: null, stderrTail: error?.message || lastLine(this.tail) };
+          if (this.argv[0] === 'exec' || this.argv[0] === 'shell') exit.result = { ...(ev.result as unknown as ExecExit), error };
+          if (error) exit.error = error;
           continue;
         }
         if (ev.type === 'stderr') this.tail = (this.tail + dec.decode(ev.data)).slice(-4096);
@@ -180,7 +188,10 @@ export class NativeStream implements OutputStream {
     } catch (e) {
       // As gaiadesk-cli would: the failure is the exit code and the last stderr line.
       const err = fromNative(e, this.argv[0]);
-      return { exitCode: err.exitCode, signal: null, stderrTail: err.message };
+      const exit: Exit = { exitCode: err.exitCode, signal: null, stderrTail: err.message };
+      const env = errorEnvelope(err.json);
+      if (env?.kind !== undefined) exit.error = execError({ kind: env.kind, message: env.message, reason: env.reason, desk: env.desk }, err.exitCode) ?? undefined;
+      return exit;
     } finally {
       this.done = true;
       this.wake();
@@ -274,7 +285,12 @@ export class NativeBackend {
 
   /** exec/shell: the result, or CommandError with `check` (as the CLI backend does). */
   async exec(op: 'exec' | 'shell', args: Record<string, unknown>, o: NativeCallOptions & { check?: boolean }): Promise<ExecResult> {
-    const r = await this.call<ExecResult>(op, args, o);
+    const r = normalizeExecResult(await this.call<Record<string, unknown>>(op, args, o));
+    // A result that says the command never ran (an older build returned one) is an error, as on the CLI.
+    if (neverRan(r) && r.error) {
+      const e = r.error;
+      throw errorForKind(e.kind, e.message, { kind: (e.reason && SDK_KINDS.has(e.reason) ? e.reason : e.kind) as ErrorKind, exitCode: r.exit, argv: [op], json: r, reason: e.reason ?? null, desk: e.desk ?? r.desk });
+    }
     if (o.check && r.exit !== 0) {
       const why = r.timed_out ? 'timed out' : `exited ${r.exit}`;
       throw new CommandError(`command on desk ${r.desk} ${why}`, r, { exitCode: r.exit, argv: [op], json: r, kind: 'failed' });
@@ -301,7 +317,7 @@ export class NativeBackend {
     const toExit = (r: Record<string, unknown>): Exit => ({
       exitCode: typeof r.exit === 'number' ? r.exit : 0,
       signal: null,
-      stderrTail: typeof r.error === 'string' ? r.error : '',
+      stderrTail: execError(r.error, r.exit)?.message ?? '',
     });
     const done = f.done.then(toExit);
     return { listening: f.listening, done, close: async () => toExit(await f.close()) };

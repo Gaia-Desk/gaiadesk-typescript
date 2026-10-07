@@ -31,7 +31,7 @@
     "build:test": "tsc -p tsconfig.test.json",
     "typecheck:examples": "tsc -p tsconfig.examples.json",
     "clean": "node -e \"for (const d of ['dist', 'dist-test']) require('node:fs').rmSync(d, { recursive: true, force: true })\"",
-    "test": "npm run clean && npm run build && npm run build:test && npm run typecheck:examples && node --test dist-test/args.test.js dist-test/errors.test.js dist-test/mcp.test.js dist-test/client.test.js dist-test/native.test.js dist-test/native-real.test.js dist-test/package.test.js",
+    "test": "npm run clean && npm run build && npm run build:test && npm run typecheck:examples && node --test dist-test/args.test.js dist-test/errors.test.js dist-test/results.test.js dist-test/mcp.test.js dist-test/client.test.js dist-test/native.test.js dist-test/native-real.test.js dist-test/package.test.js",
     "prepack": "npm run clean && npm run build"
   },
   "devDependencies": {

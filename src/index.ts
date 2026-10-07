@@ -5,8 +5,8 @@ export type { GaiaDeskOptions, CallOptions, ExecOptions, StreamExecOptions, Forw
 export { CliStream } from './proc.js';
 export type { Chunk, Exit, Completed, OutputStream } from './proc.js';
 export type { NativeModule, NativeClientLike, NativeClientOptions, NativeCallOptions, NativeOutputStream, NativeEvent, NativeForwardHandle, NativeScreenHandle } from './native.js';
-export { McpClient, McpError, MCP_PROTOCOL_VERSION, toolText, toolImage, toolNameAlias, resolveToolName } from './mcp.js';
-export type { McpTool, McpToolResult, McpContent } from './mcp.js';
+export { McpClient, McpError, MCP_PROTOCOL_VERSION, GAIADESK_TOOLS, toolText, toolImage, toolNameAlias, resolveToolName } from './mcp.js';
+export type { McpTool, McpToolResult, McpContent, GaiaDeskToolName } from './mcp.js';
 export {
   GaiaDeskError,
   CliNotFoundError,
@@ -19,7 +19,9 @@ export {
   CommandError,
 } from './errors.js';
 export { errorEnvelope } from './errors.js';
-export type { ErrorKind, ErrorEnvelope } from './errors.js';
+export type { ErrorKind, ErrorEnvelope, ErrorDetails } from './errors.js';
+export { parseVersionInfo } from './results.js';
+export { parseExecEvent } from './exec-stream.js';
 export type { RunShapeOptions, JobOptions, TokenCreateOptions, ForwardSpec, McpServerOptions } from './args.js';
 export { locateCli } from './locate.js';
 export * from './types.js';

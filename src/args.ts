@@ -68,17 +68,37 @@ function shapeFlags(o: RunShapeOptions): string[] {
 }
 
 /**
+ * A directory on the desk for `--cwd` (exec, run): as written (a relative one
+ * is taken from the desk user's home, or a confined token's folder).
+ */
+export function checkCwd(cwd: string): string {
+  if (typeof cwd !== 'string' || !cwd.trim() || cwd.includes('\0')) {
+    throw new UsageError(`cwd is a directory on the desk: ${JSON.stringify(cwd)}`, { kind: 'usage' });
+  }
+  return cwd;
+}
+
+/**
  * `exec --desk-id <id> [flags] -- <command>`. A string is ONE command line
  * for the desk's shell, verbatim; an array is separate arguments, which the
- * desk quotes for its shell (`--shell none`: run directly).
+ * desk quotes for its shell (`--shell none`: run directly). `json`: `true`
+ * for `--json` (one object at the end), `'stream'` for `--json-stream` (one
+ * event per line as it runs, gaiadesk-cli 0.10.324+), `false` for neither.
  */
-export function execArgs(deskId: string, command: string | readonly string[], o: RunShapeOptions & { stdin?: boolean }, json: boolean): string[] {
+export function execArgs(
+  deskId: string,
+  command: string | readonly string[],
+  o: RunShapeOptions & { stdin?: boolean; cwd?: string },
+  json: boolean | 'stream',
+): string[] {
   const argv = typeof command === 'string' ? [command] : [...command];
   if (argv.length === 0 || (argv.length === 1 && !argv[0].trim())) throw new UsageError('exec needs a command', { kind: 'usage' });
   const a = ['exec', '--desk-id', checkDesk(deskId), '--quiet'];
-  if (json) a.push('--json');
+  if (json === 'stream') a.push('--json-stream');
+  else if (json) a.push('--json');
   a.push(o.stdin ? '--stdin' : '--no-stdin');
   a.push(...shapeFlags(o));
+  if (o.cwd !== undefined) a.push('--cwd', checkCwd(o.cwd));
   a.push('--', ...argv);
   return a;
 }
@@ -128,9 +148,11 @@ export interface JobOptions {
   mem?: number | string;
   /** true: --keep-awake; false: --no-keep-awake; undefined: the desk's default. */
   keepAwake?: boolean;
+  /** The directory the job starts in on the desk (`--cwd`; gaiadesk-cli 0.10.324+). */
+  cwd?: string;
 }
 
-/** `run --detach --name <job> --desk-id <id> [caps] --json -- <command>`. */
+/** `run --detach --name <job> --desk-id <id> [caps] [--cwd <dir>] --json -- <command>`. */
 export function runArgs(deskId: string, name: string, command: string | readonly string[], o: JobOptions): string[] {
   const argv = typeof command === 'string' ? [command] : [...command];
   if (argv.length === 0 || (argv.length === 1 && !argv[0].trim())) throw new UsageError('run needs a command', { kind: 'usage' });
@@ -146,6 +168,7 @@ export function runArgs(deskId: string, name: string, command: string | readonly
   if (o.mem !== undefined) a.push('--mem', String(o.mem));
   if (o.keepAwake === true) a.push('--keep-awake');
   if (o.keepAwake === false) a.push('--no-keep-awake');
+  if (o.cwd !== undefined) a.push('--cwd', checkCwd(o.cwd));
   a.push('--json', '--', ...argv);
   return a;
 }
