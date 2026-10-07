@@ -23,5 +23,5 @@ export type { ErrorKind, ErrorEnvelope, ErrorDetails } from './errors.js';
 export { parseVersionInfo } from './results.js';
 export { parseExecEvent } from './exec-stream.js';
 export type { RunShapeOptions, JobOptions, TokenCreateOptions, ForwardSpec, McpServerOptions } from './args.js';
-export { locateCli } from './locate.js';
+export { locateCli, npmCliBinary } from './locate.js';
 export * from './types.js';

@@ -53,7 +53,7 @@ function start(inv: Invocation): ChildProcess {
 function spawnError(e: Error & { code?: string }, inv: Invocation): GaiaDeskError {
   if (e.code === 'ENOENT' || e.code === 'EACCES') {
     return new CliNotFoundError(
-      `could not run ${JSON.stringify(inv.command[0])} (${e.code}). Install GaiaDesk from https://gaiadesk.net/download, ` +
+      `could not run ${JSON.stringify(inv.command[0])} (${e.code}). Install gaiadesk-cli (npm install @gaiadesk/cli, or GaiaDesk from https://gaiadesk.net/download), ` +
         'or pass the full path of gaiadesk-cli as the `cli` option (or set GAIADESK_CLI).',
       { kind: 'not_found', argv: inv.args },
     );

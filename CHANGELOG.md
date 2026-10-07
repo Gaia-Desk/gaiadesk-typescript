@@ -2,6 +2,10 @@
 
 ## Unreleased: gaiadesk-cli 0.10.324
 
+- `@gaiadesk/cli` (the `gaiadesk-cli` command line, prebuilt per platform) is
+  an optional dependency, and `locateCli` tries its binary right after
+  `$GAIADESK_CLI`, before `PATH`: `npm install @gaiadesk/sdk` works with
+  nothing else installed. `npmCliBinary()` is exported.
 - Result types are generated from GaiaDesk's JSON Schema of every `--json`
   shape (`src/types.generated.ts`). The public names (`ExecResult`,
   `JobInfo`, `DeskStats`, `TokenInfo`, ...) are kept as aliases; every schema

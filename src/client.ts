@@ -59,7 +59,7 @@ import type {
 export interface GaiaDeskOptions {
   /**
    * gaiadesk-cli: a path, or a command vector (e.g. `[process.execPath, 'fake-cli.mjs']`).
-   * Default: $GAIADESK_CLI, then PATH, then the standard install locations.
+   * Default: $GAIADESK_CLI, then the binary of @gaiadesk/cli (an optional dependency), then PATH, then the standard install locations.
    */
   cli?: string | readonly string[];
   /** A scoped agent token file (`gaiadesk-cli token create --out`). Sets GAIADESK_TOKEN_FILE. */

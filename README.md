@@ -55,12 +55,18 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 npm install @gaiadesk/sdk
 ```
 
-That also installs `@gaiadesk/sdk-native` (an optional dependency) with the
-binary for your platform, and the SDK uses it: no GaiaDesk app or CLI
-needed. With `--omit=optional`, or on a platform without a binary, the SDK
-uses `gaiadesk-cli` instead: install GaiaDesk (it includes the CLI) from
-<https://gaiadesk.net/download>. The SDK finds `gaiadesk-cli` through
-`$GAIADESK_CLI`, then `PATH`, then the standard locations
+That also installs two optional dependencies with the binaries for your
+platform: `@gaiadesk/sdk-native`, which the SDK uses directly, and
+[`@gaiadesk/cli`](https://www.npmjs.com/package/@gaiadesk/cli), the
+`gaiadesk-cli` command line, which it uses for whatever needs the CLI (and
+which you can run as `npx gaiadesk`). No GaiaDesk app is needed on the machine.
+
+With `--omit=optional`, or on a platform without a binary, install
+`gaiadesk-cli` some other way — `npm install -g @gaiadesk/cli`, the install
+scripts or Homebrew from [Gaia-Desk/gaiadesk-cli](https://github.com/Gaia-Desk/gaiadesk-cli),
+or the GaiaDesk app (<https://gaiadesk.net/download>), which includes it. The
+SDK finds `gaiadesk-cli` through `$GAIADESK_CLI`, then `@gaiadesk/cli`'s
+binary, then `PATH`, then the standard locations
 (`/Applications/GaiaDesk.app/Contents/MacOS/gaiadesk-cli`,
 `C:\Program Files\GaiaDesk\gaiadesk-cli.exe`, `/usr/bin/gaiadesk-cli`), or use
 the `cli` option to point at it.
@@ -156,7 +162,7 @@ missing credential fails fast with a `UsageError`.
 | `server` | `GAIADESK_SERVER` | Signaling server (`wss://…/ws`); default `wss://gaiadesk.net/ws`. Also passed as `--server` to `mcp` and `agent-connect`. |
 | `persist` | `GAIADESK_PERSIST` | How long a desk connection is held for later commands (default `10m`; `0` = none). |
 | `env` | | The base environment (default: this process's). |
-| `cli` | `GAIADESK_CLI` | Path to `gaiadesk-cli`, or a command vector. |
+| `cli` | `GAIADESK_CLI` | Path to `gaiadesk-cli`, or a command vector (default: found as described under Install). |
 
 Mint, list and revoke tokens (the desk's owner, with the unattended password):
 

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import * as A from '../dist/args.js';
 import { UsageError } from '../dist/index.js';
 import type { Shell } from '../dist/index.js';
-import { locateCli, standardLocations } from '../dist/locate.js';
+import { locateCli, npmCliBinary, standardLocations } from '../dist/locate.js';
 
 test('exec: one command line vs an argument vector, stdin closed by default', () => {
   assert.deepEqual(A.execArgs('123456789', 'ls | wc -l', {}, true), ['exec', '--desk-id', '123456789', '--quiet', '--json', '--no-stdin', '--', 'ls | wc -l']);
@@ -102,11 +102,21 @@ test('forward pairs, mcp, disconnect, agent-connect', () => {
   assert.deepEqual(A.agentConnectArgs('1', 'wss://x/ws'), ['agent-connect', '--desk-id', '1', '--server', 'wss://x/ws']);
 });
 
-test('locating gaiadesk-cli: $GAIADESK_CLI, PATH, then the install locations', () => {
-  assert.equal(locateCli({ GAIADESK_CLI: '/x/cli' }, 'linux', () => false), '/x/cli');
-  assert.equal(locateCli({ PATH: '/a:/b' }, 'linux', (p) => p === '/b/gaiadesk-cli'), '/b/gaiadesk-cli');
-  assert.equal(locateCli({ PATH: '/a' }, 'darwin', (p) => p.startsWith('/Applications/')), '/Applications/GaiaDesk.app/Contents/MacOS/gaiadesk-cli');
-  assert.equal(locateCli({ ProgramFiles: 'C:\\Program Files' }, 'win32', (p) => p.includes('Program Files')), 'C:\\Program Files\\GaiaDesk\\gaiadesk-cli.exe');
-  assert.equal(locateCli({}, 'linux', () => false), 'gaiadesk-cli');
+test('locating gaiadesk-cli: $GAIADESK_CLI, @gaiadesk/cli, PATH, then the install locations', () => {
+  const none = () => null;
+  assert.equal(locateCli({ GAIADESK_CLI: '/x/cli' }, 'linux', () => false, () => '/npm/cli'), '/x/cli');
+  assert.equal(locateCli({ PATH: '/a:/b' }, 'linux', (p) => p === '/b/gaiadesk-cli', none), '/b/gaiadesk-cli');
+  assert.equal(locateCli({ PATH: '/a' }, 'darwin', (p) => p.startsWith('/Applications/'), none), '/Applications/GaiaDesk.app/Contents/MacOS/gaiadesk-cli');
+  assert.equal(locateCli({ ProgramFiles: 'C:\\Program Files' }, 'win32', (p) => p.includes('Program Files'), none), 'C:\\Program Files\\GaiaDesk\\gaiadesk-cli.exe');
+  assert.equal(locateCli({}, 'linux', () => false, none), 'gaiadesk-cli');
+  // The npm package's binary comes before PATH, on this machine's own platform only.
+  assert.equal(locateCli({ PATH: '/b' }, process.platform, () => true, () => '/npm/gaiadesk-cli'), '/npm/gaiadesk-cli');
+  const other = process.platform === 'linux' ? 'darwin' : 'linux';
+  assert.equal(locateCli({ PATH: '/b' }, other, (p) => p === '/b/gaiadesk-cli', () => '/npm/gaiadesk-cli'), '/b/gaiadesk-cli');
+  // npmCliBinary: the package's tryBinaryPath, and null for anything wrong.
+  assert.equal(npmCliBinary(() => ({ tryBinaryPath: () => '/n/bin/gaiadesk-cli' })), '/n/bin/gaiadesk-cli');
+  assert.equal(npmCliBinary(() => ({ tryBinaryPath: () => null })), null);
+  assert.equal(npmCliBinary(() => ({})), null, 'a package without the function');
+  assert.equal(npmCliBinary(() => { throw new Error('Cannot find module'); }), null, 'not installed');
   assert.deepEqual(standardLocations('linux', {}, '/home/me'), ['/usr/bin/gaiadesk-cli', '/usr/local/bin/gaiadesk-cli', '/home/me/.local/bin/gaiadesk-cli']);
 });

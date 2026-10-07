@@ -1,7 +1,29 @@
-// Where gaiadesk-cli is, when the caller did not say. Locations from
-// GaiaDesk's public docs ("Where gaiadesk-cli is").
+// Where gaiadesk-cli is, when the caller did not say: $GAIADESK_CLI, then the
+// binary of the npm package @gaiadesk/cli (an optional dependency, so
+// `npm install @gaiadesk/sdk` brings a CLI with it), then PATH, then the
+// install locations from GaiaDesk's public docs ("Where gaiadesk-cli is").
 
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
+/** What `require('@gaiadesk/cli')` gives (CommonJS, so it loads synchronously). */
+interface CliPackage {
+  tryBinaryPath?: () => string | null;
+}
+
+/**
+ * The gaiadesk-cli binary @gaiadesk/cli installed for this platform, or null
+ * (the package is absent, older, or has no binary for this platform).
+ */
+export function npmCliBinary(req: (id: string) => unknown = createRequire(import.meta.url)): string | null {
+  try {
+    const m = req('@gaiadesk/cli') as CliPackage;
+    const p = typeof m?.tryBinaryPath === 'function' ? m.tryBinaryPath() : null;
+    return typeof p === 'string' && p ? p : null;
+  } catch {
+    return null;
+  }
+}
 
 export function standardLocations(platform: string, env: Record<string, string | undefined>, home?: string): string[] {
   if (platform === 'darwin') {
@@ -37,15 +59,22 @@ export function pathCandidates(platform: string, env: Record<string, string | un
 }
 
 /**
- * The gaiadesk-cli to run: $GAIADESK_CLI, then PATH, then the standard
- * locations. Falls back to the bare name (spawn then reports it missing).
+ * The gaiadesk-cli to run: $GAIADESK_CLI, then @gaiadesk/cli's binary, then
+ * PATH, then the standard locations. Falls back to the bare name (spawn then
+ * reports it missing). `npmCli` is asked only for this process's own
+ * platform (the npm package holds this machine's binary).
  */
 export function locateCli(
   env: Record<string, string | undefined>,
   platform: string = process.platform,
   exists: (p: string) => boolean = existsSync,
+  npmCli: () => string | null = npmCliBinary,
 ): string {
   if (env.GAIADESK_CLI) return env.GAIADESK_CLI;
+  if (platform === process.platform) {
+    const fromNpm = npmCli();
+    if (fromNpm) return fromNpm;
+  }
   const home = platform === 'win32' ? env.USERPROFILE : env.HOME;
   for (const c of [...pathCandidates(platform, env), ...standardLocations(platform, env, home)]) {
     if (exists(c)) return c;

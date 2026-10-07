@@ -24,6 +24,7 @@
   },
   "sideEffects": false,
   "optionalDependencies": {
+    "@gaiadesk/cli": "^0.10.324",
     "@gaiadesk/sdk-native": "^0.10.323"
   },
   "scripts": {
