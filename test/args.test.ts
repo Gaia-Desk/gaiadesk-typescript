@@ -9,7 +9,7 @@ import type { Shell } from '../dist/index.js';
 import { locateCli, standardLocations } from '../dist/locate.js';
 
 test('exec: one command line vs an argument vector, stdin closed by default', () => {
-  assert.deepEqual(A.execArgs('392586273', 'ls | wc -l', {}, true), ['exec', '--desk-id', '392586273', '--quiet', '--json', '--no-stdin', '--', 'ls | wc -l']);
+  assert.deepEqual(A.execArgs('123456789', 'ls | wc -l', {}, true), ['exec', '--desk-id', '123456789', '--quiet', '--json', '--no-stdin', '--', 'ls | wc -l']);
   assert.deepEqual(A.execArgs('1', ['printf', '%s', 'a b'], { shell: 'none', stdin: true }, false), [
     'exec', '--desk-id', '1', '--quiet', '--stdin', '--shell', 'none', '--', 'printf', '%s', 'a b',
   ]);
@@ -49,8 +49,8 @@ test('cp: direction decides the order; local paths that look like <desk>:<path> 
 });
 
 test('run --detach: caps and the command after --', () => {
-  assert.deepEqual(A.runArgs('608876148', 'build', 'msbuild app.sln /m', { priority: 'low', cpu: 50, mem: '4G', keepAwake: true }), [
-    'run', '--detach', '--name', 'build', '--desk-id', '608876148', '--priority', 'low', '--cpu', '50', '--mem', '4G', '--keep-awake', '--json', '--', 'msbuild app.sln /m',
+  assert.deepEqual(A.runArgs('234567890', 'build', 'msbuild app.sln /m', { priority: 'low', cpu: 50, mem: '4G', keepAwake: true }), [
+    'run', '--detach', '--name', 'build', '--desk-id', '234567890', '--priority', 'low', '--cpu', '50', '--mem', '4G', '--keep-awake', '--json', '--', 'msbuild app.sln /m',
   ]);
   assert.ok(A.runArgs('1', 'b', ['./build.sh', '--release'], { keepAwake: false }).includes('--no-keep-awake'));
   assert.throws(() => A.runArgs('1', '-x', 'make', {}), UsageError, 'a job name never looks like a flag');

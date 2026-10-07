@@ -3,7 +3,7 @@
 // exec: exec ends its whole process tree when it returns.)
 //
 //   export GAIADESK_TOKEN_FILE=~/.config/gaiadesk/bot.token   # scope: jobs
-//   npx tsx run-a-job.ts 392586273      (or compile with tsc and run with node)
+//   npx tsx run-a-job.ts 123456789      (or compile with tsc and run with node)
 import { GaiaDesk } from '@gaiadesk/sdk';
 
 const [desk] = process.argv.slice(2);

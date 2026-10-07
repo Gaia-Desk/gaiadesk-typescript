@@ -63,23 +63,23 @@ const gd = new GaiaDesk({ tokenFile: `${process.env.HOME}/.config/gaiadesk/bot.t
 const { devices } = await gd.devices();
 console.log(devices.map((d) => `${d.desk_id} ${d.name} online=${d.online}`));
 
-const r = await gd.exec('392586273', 'uname -a', { shell: 'sh', timeout: 60 });
+const r = await gd.exec('123456789', 'uname -a', { shell: 'sh', timeout: 60 });
 console.log(r.exit, r.stdout, r.route);
 
 try {
-  await gd.upload('./dist', '392586273', 'deploy/', { recursive: true });
+  await gd.upload('./dist', '123456789', 'deploy/', { recursive: true });
 } catch (e) {
   if (e instanceof RefusedError) console.error('the token lacks the cp scope:', e.message);
   else throw e;
 }
 
 // Stream output as it is produced:
-const s = gd.execStream('392586273', ['npm', 'test']);
+const s = gd.execStream('123456789', ['npm', 'test']);
 for await (const c of s.text()) process[c.stream].write(c.text);
 console.log('exit', (await s.wait()).exitCode);
 
 // Many desks at once:
-const results = await Promise.all(['392586273', '608876148'].map((d) => gd.exec(d, 'hostname')));
+const results = await Promise.all(['123456789', '234567890'].map((d) => gd.exec(d, 'hostname')));
 for (const x of results) console.log(x.desk, x.stdout.trim());
 ```
 
@@ -108,10 +108,10 @@ Mint, list and revoke tokens (the desk's owner, with the unattended password):
 
 ```ts
 const owner = new GaiaDesk({ code: process.env.DESK_PASSWORD });
-await owner.createToken({ desks: '392586273', name: 'ci', scopes: ['exec', 'cp', 'jobs'], expires: '24h', cwd: '/srv/app', lowPriv: true, out: '/home/ci/.config/gaiadesk/ci.token' });
-await owner.listTokens('392586273');
-await owner.revokeToken('392586273', 'ci');            // or { all: true }; { account: true } via your signed-in account
-await owner.audit('392586273', { token: 'ci', limit: 100 });
+await owner.createToken({ desks: '123456789', name: 'ci', scopes: ['exec', 'cp', 'jobs'], expires: '24h', cwd: '/srv/app', lowPriv: true, out: '/home/ci/.config/gaiadesk/ci.token' });
+await owner.listTokens('123456789');
+await owner.revokeToken('123456789', 'ci');            // or { all: true }; { account: true } via your signed-in account
+await owner.audit('123456789', { token: 'ci', limit: 100 });
 ```
 
 Scopes: `exec`, `shell`, `cp`, `forward`, `jobs`, `screen` (default
@@ -175,7 +175,7 @@ protocol (MCP 2026-07-28, stateless):
 ```ts
 const gd = new GaiaDesk({ agentToken: process.env.GAIADESK_AGENT_TOKEN });
 const m = gd.mcp({ auditDir: '/var/log/gaiadesk-agent' });
-const open = await m.callTool('gaiadesk.open_session', { desk_id: '392586273' });
+const open = await m.callTool('gaiadesk.open_session', { desk_id: '123456789' });
 const session = open.structuredContent?.session_id as string;
 const shot = await m.callTool('gaiadesk.screenshot', { session_id: session });
 await m.callTool('gaiadesk.click', { session_id: session, x: 200, y: 140 });

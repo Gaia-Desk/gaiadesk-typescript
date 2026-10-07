@@ -2,7 +2,7 @@
 // A copy is resumable: run it again after an interruption and it continues.
 //
 //   export GAIADESK_TOKEN_FILE=~/.config/gaiadesk/bot.token   # scopes: cp, exec
-//   npx tsx copy-a-file.ts 392586273 ./site      (or compile with tsc and run with node)
+//   npx tsx copy-a-file.ts 123456789 ./site      (or compile with tsc and run with node)
 import { GaiaDesk, OperationFailedError } from '@gaiadesk/sdk';
 import type { CpSummary } from '@gaiadesk/sdk';
 

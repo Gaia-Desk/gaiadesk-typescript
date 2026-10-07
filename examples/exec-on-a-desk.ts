@@ -1,7 +1,7 @@
 // Run one command on a desk and handle every outcome.
 //
 //   export GAIADESK_TOKEN_FILE=~/.config/gaiadesk/bot.token   # a token with the `exec` scope
-//   npx tsx exec-on-a-desk.ts 392586273 "df -h /"      (or compile with tsc and run with node)
+//   npx tsx exec-on-a-desk.ts 123456789 "df -h /"      (or compile with tsc and run with node)
 import { GaiaDesk, GaiaDeskError, RefusedError, UnreachableError, UsageError } from '@gaiadesk/sdk';
 
 const [desk, command = 'hostname'] = process.argv.slice(2);
