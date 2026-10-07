@@ -12,7 +12,7 @@ import { DEFAULT_API_URL, GaiaDesk, GaiaDeskError, ProtocolError, RefusedError, 
 import type { GaiaDeskOptions } from '../dist/index.js';
 import { SseParser } from '../dist/api-stream.js';
 import { seconds } from '../dist/api.js';
-import { HTML_DESK, LIMITED_DESK, startMockApi } from './fixtures/mock-api.js';
+import { HTML_DESK, LIMITED_DESK, startMockApi, waits } from './fixtures/mock-api.js';
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-cli.js', import.meta.url));
 const OK = '123456789';
@@ -92,6 +92,44 @@ test('runJob sends a JobSpec, createToken a MintSpec per desk, logs its tail', a
   assert.deepEqual(body(), { name: 'bot', expires_secs: 86400, scopes: ['exec', 'cp', 'jobs'], cwd: '/srv', low_priv: true });
   await owner.revokeToken(OK, '9f3a1c2b7d004e11');
   assert.deepEqual([last().method, last().path], ['DELETE', `/v1/desks/${OK}/tokens/9f3a1c2b7d004e11`]);
+});
+
+test('env and shell go in the ExecSpec and the JobSpec, checked as the CLI checks them', async () => {
+  const gd = apiGd();
+  await gd.exec(OK, 'deploy', { shell: 'powershell', env: { STAGE: 'prod', EMPTY: '' } });
+  assert.deepEqual(body(), { command: 'deploy', shell: 'pwsh', env: { STAGE: 'prod', EMPTY: '' } }, 'powershell is sent as pwsh, as the CLI reads it');
+  const s = gd.execStream(OK, 'x', { env: { A: '1' } });
+  await s.wait();
+  assert.deepEqual(body(), { command: 'x', env: { A: '1' } });
+  await gd.runJob(OK, 'build', 'make all', { shell: 'bash', env: { CI: '1' } });
+  assert.deepEqual(body(), { name: 'build', command: ['make all'], limits: {}, shell: 'bash', env: { CI: '1' } });
+  await gd.runJob(OK, 'build', 'Get-Date', { shell: 'powershell' });
+  assert.equal(body().shell, 'pwsh');
+  const before = api.requests.length;
+  await assert.rejects(gd.exec(OK, 'x', { env: { 'A=B': 'secret-value' } }), (e) => e instanceof UsageError && !e.message.includes('secret-value'));
+  await assert.rejects(gd.runJob(OK, 'b', 'x', { env: { A: 'nul\0' } }), UsageError);
+  await assert.rejects(gd.runJob(OK, 'b', 'x', { shell: 'none' as never }), UsageError);
+  assert.equal(api.requests.length, before, 'nothing sent for a bad env or shell');
+});
+
+test('waitJob: GET …/wait, {job, timed_out}, keep-alive spaces, a held failure, and long timeouts waited in turns', async () => {
+  const gd = apiGd();
+  const done = await gd.waitJob(OK, 'failing', { timeout: '10m' });
+  assert.deepEqual([last().method, last().path, last().query], ['GET', `/v1/desks/${OK}/jobs/failing/wait`, { timeout: '600' }]);
+  assert.deepEqual([done.timed_out, done.job.state, done.job.exit_code], [false, 'exited', 3], 'the job\'s own code is a result');
+  const now = await gd.waitJob(OK, 'slow', { timeout: 0 });
+  assert.deepEqual([now.timed_out, now.job.state, last().query.timeout], [true, 'running', '0']);
+  const forever = await gd.waitJob(OK, 'build');
+  assert.deepEqual([forever.timed_out, last().query.timeout], [false, '870'], 'no timeout: the API\'s longest, again until it ends');
+  const held = await gd.waitJob(OK, 'held');
+  assert.equal(held.job.name, 'held', 'leading keep-alive spaces are still JSON');
+  await assert.rejects(gd.waitJob(OK, 'held-fail'), (e) => e instanceof GaiaDeskError && e.kind === 'connection_lost' && (e as GaiaDeskError & { reason?: string }).reason === 'desk_disconnected');
+  await assert.rejects(gd.waitJob(OK, 'nope'), (e) => e instanceof GaiaDeskError && e.kind === 'failed');
+  waits.length = 0;
+  const slow = await gd.waitJob(OK, 'slow', { timeout: 0.3 });
+  assert.equal(slow.timed_out, true);
+  assert.ok(waits.length >= 1 && waits.every((t) => t === '1'), `a short timeout is asked of the API as is: ${waits}`);
+  await assert.rejects(gd.waitJob(OK, '-x'), UsageError);
 });
 
 test('files: raw bytes up, raw bytes down', async () => {
@@ -200,18 +238,13 @@ test('operations the API does not serve are UsageErrors that say so, and send no
     () => gd.createToken({ desks: OK, name: 'bot', out: '/tmp/bot.token' }),
     () => gd.revokeToken(OK, { all: true }),
     () => gd.revokeToken(OK, 'bot', { account: true }),
-    () => gd.waitJob(OK, 'build'),
     () => gd.whoami(),
-    () => gd.exec(OK, 'make', { env: { CI: '1' } }),
-    () => gd.runJob(OK, 'build', 'make', { env: { CI: '1' } }),
-    () => gd.runJob(OK, 'build', 'make', { shell: 'bash' }),
   ]) {
     await assert.rejects(call(), notServed);
   }
   assert.throws(() => gd.shellStream(OK), notServed);
   assert.throws(() => gd.mcp(), notServed);
   assert.throws(() => gd.execStream(OK, 'cat', { stdin: true }), notServed);
-  assert.throws(() => gd.execStream(OK, 'make', { env: { CI: '1' } }), notServed);
   assert.equal(own.requests.length, 0);
   await own.close();
 });

@@ -131,9 +131,10 @@ What it serves, with the same results and errors as the CLI transport:
 | Method | API |
 |---|---|
 | `devices({deskId?})` | `GET /desks` (`{devices, sources, notes}`; `deskId` filters it) |
-| `exec(deskId, command, opts)` | `POST /desks/{id}/exec` (an `ExecSpec`: `command` or `argv`, `shell`, `cwd`, `stdin`, `timeout_secs`) |
+| `exec(deskId, command, opts)` | `POST /desks/{id}/exec` (an `ExecSpec`: `command` or `argv`, `shell`, `env`, `cwd`, `stdin`, `timeout_secs`) |
 | `execStream(deskId, command, opts)` | `POST /desks/{id}/exec?stream=1` (Server-Sent Events of `ExecEvent`s) |
-| `runJob`, `jobs`, `killJob` | `POST` / `GET /desks/{id}/jobs`, `DELETE /desks/{id}/jobs/{name}` |
+| `runJob`, `jobs`, `killJob` | `POST` / `GET /desks/{id}/jobs` (a `JobSpec`, with `shell` and `env`), `DELETE /desks/{id}/jobs/{name}` |
+| `waitJob(deskId, name, {timeout})` | `GET /desks/{id}/jobs/{name}/wait?timeout=` (`{job, timed_out}`; one request holds at most 870 s, so a longer or no `timeout` asks again until the job ends) |
 | `jobLogs(deskId, name, {tail})` | `GET /desks/{id}/jobs/{name}/logs?tail=` |
 | `followJobLogs(deskId, name)` | `GET …/logs?follow=1` (Server-Sent Events of `JobLogEvent`s) |
 | `stats(deskId)` | `GET /desks/{id}/stats` |
@@ -155,6 +156,9 @@ What it serves, with the same results and errors as the CLI transport:
   has `status` (HTTP), `requestId` (quote it to support) and `retryAfter`
   (seconds, on a 429). No connection is `UnreachableError` with kind
   `network`; an answer that is not the envelope is a `ProtocolError`.
+- `shell: 'powershell'` is sent as `pwsh`, as gaiadesk-cli reads it. `env`
+  values go in the request body and are never logged (by the API or the desk);
+  a low-privilege token's desk refuses them, as for the CLI.
 - `timeout` becomes `timeout_secs`; `connectTimeout`, `persist` and
   `verbose` do not apply. `createToken` needs a `name` over the API (and
   defaults `expires` to 7 days, `scopes` to exec, cp, jobs).
@@ -165,8 +169,7 @@ available over the API transport; use the CLI or native transport"):
 `meshStatus`, `meshIp`, `disconnect`, `audit`, `probe` /
 `devices({probe: true})`, recursive copies, `createToken({out})`,
 `revokeToken({all: true})` / `{account: true}`, `execStream` with
-`stdin: true`, `env` on `exec` / `execStream` / `runJob`, `shell` on
-`runJob`, `waitJob`, `whoami`, and the CLI's own `version`, `versionInfo`,
+`stdin: true`, `whoami`, and the CLI's own `version`, `versionInfo`,
 `features`, `raw`.
 
 ## Quickstart

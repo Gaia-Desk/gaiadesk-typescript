@@ -390,7 +390,6 @@ export class GaiaDesk {
    */
   async exec(deskId: string, command: string | readonly string[], o: ExecOptions = {}): Promise<ExecResult> {
     if (this.apiT) {
-      if (o.env !== undefined) throw notOverApi('exec with env');
       return this.apiT.exec(deskId, command, o);
     }
     const n = this.nat();
@@ -410,7 +409,6 @@ export class GaiaDesk {
    */
   execStream(deskId: string, command: string | readonly string[], o: StreamExecOptions = {}): OutputStream {
     if (this.apiT) {
-      if (o.env !== undefined) throw notOverApi('execStream with env');
       return this.apiT.execStream(deskId, command, o);
     }
     const n = this.nat();
@@ -489,14 +487,13 @@ export class GaiaDesk {
   /**
    * `run --detach --json`: start a named background job that outlives this
    * connection. `cwd` (the directory it starts in) needs the `run_cwd`
-   * feature (or the native library). `shell` (`sh`, `bash`, `zsh`, `cmd`,
-   * `pwsh`) runs the command; `env` gives it variables (`--env`). A job a
+   * feature (or the native library). `shell` (`sh`, `bash`, `zsh`, `cmd`, `pwsh`
+   * or `powershell`) runs the command; `env` gives it variables (`--env`). A job a
    * program in it was refused by Windows Smart App Control / WDAC ends with
    * `reason: 'blocked_by_os_policy'`.
    */
   async runJob(deskId: string, name: string, command: string | readonly string[], o: A.JobOptions & CallOptions = {}): Promise<JobInfo> {
     if (this.apiT) {
-      if (o.env !== undefined || o.shell !== undefined) throw notOverApi(`runJob with ${o.env !== undefined ? 'env' : 'shell'}`);
       return this.apiT.runJob(deskId, name, command, o);
     }
     const n = this.nat();
@@ -513,7 +510,7 @@ export class GaiaDesk {
    * the job still running. No such job is an OperationFailedError.
    */
   async waitJob(deskId: string, name: string, o: { timeout?: number | string } & CallOptions = {}): Promise<JobWaitResult> {
-    this.cliOnly('waitJob()', 'poll jobs() instead, or use the CLI or native transport');
+    if (this.apiT) return this.apiT.waitJob(deskId, name, o);
     const n = this.nat();
     if (n) return n.call<JobWaitResult>('job_wait', N.waitJob(deskId, name, o.timeout), o);
     const args = A.waitArgs(deskId, name, o);

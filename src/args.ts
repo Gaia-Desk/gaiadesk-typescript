@@ -6,10 +6,15 @@
 import { UsageError } from './errors.js';
 import type { Shell } from './types.js';
 
-const SHELLS: readonly Shell[] = ['default', 'none', 'sh', 'bash', 'zsh', 'cmd', 'pwsh'];
+const SHELLS: readonly Shell[] = ['default', 'none', 'sh', 'bash', 'zsh', 'cmd', 'pwsh', 'powershell'];
 /** The shells `run --shell` takes (a job is a command line: no `none`; no `--shell` is the desk's default). */
-export const JOB_SHELLS = ['sh', 'bash', 'zsh', 'cmd', 'pwsh'] as const;
+export const JOB_SHELLS = ['sh', 'bash', 'zsh', 'cmd', 'pwsh', 'powershell'] as const;
 export type JobShell = (typeof JOB_SHELLS)[number];
+
+/** The shell's name as sent: `powershell` is `pwsh`, as gaiadesk-cli reads it. */
+export function wireShell<S extends string>(shell: S): S | 'pwsh' {
+  return shell === 'powershell' ? 'pwsh' : shell;
+}
 
 /** A desk id: one token, no whitespace, not a flag. */
 export function checkDesk(deskId: string): string {
@@ -57,7 +62,7 @@ function shapeFlags(o: RunShapeOptions): string[] {
   const a: string[] = [];
   if (o.shell !== undefined) {
     if (!SHELLS.includes(o.shell)) throw new UsageError(`shell is one of ${SHELLS.join(', ')}`, { kind: 'usage' });
-    a.push('--shell', o.shell);
+    a.push('--shell', wireShell(o.shell));
   }
   if (o.timeout !== undefined) a.push('--timeout', duration(o.timeout, '--timeout'));
   if (o.connectTimeout !== undefined) {
@@ -230,7 +235,7 @@ export function runArgs(deskId: string, name: string, command: string | readonly
   if (o.cwd !== undefined) a.push('--cwd', checkCwd(o.cwd));
   if (o.shell !== undefined) {
     if (!(JOB_SHELLS as readonly string[]).includes(o.shell)) throw new UsageError(`a job's shell is one of ${JOB_SHELLS.join(', ')}`, { kind: 'usage' });
-    a.push('--shell', o.shell);
+    a.push('--shell', wireShell(o.shell));
   }
   a.push(...envFlags(o.env));
   a.push('--json', '--', ...argv);

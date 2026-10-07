@@ -303,7 +303,8 @@ export interface Identity {
   /** The account's email (`null`: not signed in, or the server could not
    * say). */
   account?: string | null;
-  /** `app`, `login`, `token` or `none`. */
+  /** `app`, `login`, `token` or `none`; from the hosted API (`GET
+   * /v1/desks`), `api_key` or `session`. */
   source: string;
 }
 
@@ -551,7 +552,7 @@ export interface ScreenSize {
 }
 
 /** Which shell runs a command on the desk. */
-export type Shell = "default" | "none" | "sh" | "bash" | "zsh" | "cmd" | "pwsh";
+export type Shell = "default" | "none" | "sh" | "bash" | "zsh" | "cmd" | "pwsh" | "powershell";
 
 /** `stats --json`: the desk's own figures. */
 export interface StatsReport {

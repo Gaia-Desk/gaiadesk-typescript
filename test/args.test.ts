@@ -87,6 +87,10 @@ test('run --shell / --env; wait; whoami', () => {
     'run', '--detach', '--name', 'b', '--desk-id', '1', '--shell', 'pwsh', '--env', 'CONFIG', '--json', '--', 'make',
   ]);
   for (const bad of ['none', 'default', 'fish']) assert.throws(() => A.runArgs('1', 'b', 'make', { shell: bad as 'sh' }), UsageError);
+  // `powershell` is a shell name everywhere `pwsh` is, sent as `pwsh` (as the CLI maps it).
+  assert.deepEqual(A.runArgs('1', 'b', 'Get-Date', { shell: 'powershell' }).slice(6, 8), ['--shell', 'pwsh']);
+  assert.deepEqual(A.execArgs('1', 'Get-Date', { shell: 'powershell' }, true).filter((_x, i, a) => a[i - 1] === '--shell'), ['pwsh']);
+  assert.equal(A.wireShell('bash'), 'bash');
   assert.deepEqual(A.waitArgs('1', 'build', {}), ['wait', 'build', '--desk-id', '1', '--json']);
   assert.deepEqual(A.waitArgs('1', 'build', { timeout: '10m' }), ['wait', 'build', '--desk-id', '1', '--timeout', '10m', '--json']);
   assert.deepEqual(A.waitArgs('1', 'build', { timeout: 1.5 }).slice(4, 6), ['--timeout', '2']);

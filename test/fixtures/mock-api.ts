@@ -166,6 +166,15 @@ function relay(res: ServerResponse, ran: Ran, ok: number[] = [0], status = 200):
 
 const tick = () => new Promise((r) => setTimeout(r, 2));
 
+/** A spec's `env` as the CLI's `--env KEY=VALUE` flags (the fake logs its argv). */
+function envArgs(env: unknown): string[] {
+  if (!isObj(env)) return [];
+  return Object.entries(env).flatMap(([k, v]) => ['--env', `${k}=${String(v)}`]);
+}
+
+/** Every `timeout` a wait was asked with, in order (the tests read it). */
+export const waits: (string | undefined)[] = [];
+
 /** Write one SSE event in pieces (split mid-line, `\r\n` across writes), with a keep-alive comment first. */
 async function sse(res: ServerResponse, name: string, data: string): Promise<void> {
   const text = `: keep-alive\r\nevent: ${name}\r\ndata: ${data}\r\n\r\n`;
@@ -224,6 +233,7 @@ async function handle(res: ServerResponse, rec: Recorded): Promise<void> {
     if (spec.shell) args.push('--shell', spec.shell);
     if (typeof spec.timeout_secs === 'number') args.push('--timeout', String(spec.timeout_secs));
     if (spec.cwd) args.push('--cwd', spec.cwd);
+    args.push(...envArgs(spec.env));
     args.push('--', ...(Array.isArray(spec.argv) ? spec.argv : [spec.command]));
     if (q.stream === '1') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Request-Id': requestId() });
@@ -257,8 +267,33 @@ async function handle(res: ServerResponse, rec: Recorded): Promise<void> {
     if (l.keep_awake === true) args.push('--keep-awake');
     if (l.keep_awake === false) args.push('--no-keep-awake');
     if (spec.cwd) args.push('--cwd', spec.cwd);
+    if (spec.shell) args.push('--shell', spec.shell);
+    args.push(...envArgs(spec.env));
     args.push('--json', '--', ...spec.command);
     return relay(res, await runFake(args), [0], 201);
+  }
+  const waited = /^\/jobs\/([^/]+)\/wait$/.exec(rest);
+  if (waited && rec.method === 'GET') {
+    // `wait --json`: the job (exit: its code; 124: the timeout ran out), as {job, timed_out}.
+    const name = decodeURIComponent(waited[1]);
+    waits.push(q.timeout);
+    const args = ['wait', name, '--desk-id', desk, '--json'];
+    if (q.timeout !== undefined && q.timeout !== '870') args.push('--timeout', q.timeout);
+    const ran = await runFake(args);
+    const j = parse(ran.stdout);
+    if (!isObj(j) || isObj(j.error)) return relay(res, ran);
+    const result = { job: j, timed_out: ran.code === 124 && j.state === 'running' };
+    // A held answer: keep-alive spaces, then the JSON (or, `held-fail`, the envelope in a 200).
+    if (name === 'held' || name === 'held-fail') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'X-Request-Id': requestId() });
+      for (let i = 0; i < 3; i++) {
+        res.write(' ');
+        await tick();
+      }
+      const fail = { error: { kind: 'connection_lost', message: 'The desk went away during this operation.', reason: 'desk_disconnected', desk, request_id: requestId() } };
+      return void res.end(JSON.stringify(name === 'held' ? result : fail));
+    }
+    return sendJson(res, 200, result);
   }
   if (rest === '/jobs' && rec.method === 'GET') return relay(res, await runFake(['ps', '--desk-id', desk, '--json']));
   const job = /^\/jobs\/([^/]+)(\/logs)?$/.exec(rest);

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased: the API transport's env, shell and waitJob
+
+- API transport: `env` on `exec`, `execStream` and `runJob`, `shell` on
+  `runJob`, and `waitJob` (`GET /desks/{id}/jobs/{name}/wait`; a `timeout`
+  past the API's 870-second hold, or none, asks again until the job ends; a
+  held answer's keep-alive spaces and in-body error envelope are read).
+- `powershell` is a shell name everywhere `pwsh` is, sent as `pwsh` (as
+  gaiadesk-cli maps it). Regenerated types: `Shell` has `powershell`.
+
 ## Unreleased: gaiadesk-cli 0.10.324
 
 - `waitJob(deskId, name, {timeout?})` (`wait <job> --json`, the native

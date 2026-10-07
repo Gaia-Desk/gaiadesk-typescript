@@ -15,11 +15,13 @@ import type { ByteStreamLike } from './api-stream.js';
 import { memMb } from './native-args.js';
 import type { OutputStream } from './proc.js';
 import { listOf, neverRan, normalizeExecResult, textOf } from './results.js';
-import type { AbortSignalLike, CpSummary, DeskStats, DevicesResult, ExecResult, JobInfo, JobLogs, MintResult, TokenInfo, TokenRevokeResult } from './types.js';
+import type { AbortSignalLike, CpSummary, DeskStats, DevicesResult, ExecResult, JobInfo, JobLogs, JobWaitResult, MintResult, TokenInfo, TokenRevokeResult } from './types.js';
 
 export const DEFAULT_API_URL = 'https://api.gaiadesk.net/v1';
 /** The most one file may be through the API (larger files go direct, through the CLI or native transport). */
 export const API_FILE_LIMIT = 256 * 1024 * 1024;
+/** The longest one `GET …/jobs/{name}/wait` holds, in seconds (the API's `timeout` maximum). */
+export const API_WAIT_MAX = 870;
 
 /** What the API transport needs from `fetch` (the global one by default). */
 export type FetchLike = (url: string, init: {
@@ -207,10 +209,11 @@ export class ApiTransport {
     return { ...r, devices: r.devices.filter((d) => d.desk_id === id) };
   }
 
-  private execSpec(deskId: string, command: string | readonly string[], o: A.RunShapeOptions & { cwd?: string; stdin?: string | Uint8Array }) {
+  private execSpec(deskId: string, command: string | readonly string[], o: A.RunShapeOptions & { cwd?: string; stdin?: string | Uint8Array; env?: Readonly<Record<string, string>> }) {
     A.execArgs(deskId, command, { ...o, stdin: o.stdin !== undefined }, true); // the same UsageErrors as the CLI transport
     const spec: Record<string, unknown> = typeof command === 'string' ? { command } : { argv: [...command] };
-    if (o.shell !== undefined) spec.shell = o.shell;
+    if (o.shell !== undefined) spec.shell = A.wireShell(o.shell);
+    if (o.env !== undefined) spec.env = A.checkEnv(o.env);
     if (o.cwd !== undefined) spec.cwd = A.checkCwd(o.cwd);
     if (o.timeout !== undefined) spec.timeout_secs = seconds(o.timeout, 'timeout');
     const stdin = stdinText(o.stdin);
@@ -219,7 +222,7 @@ export class ApiTransport {
   }
 
   /** `POST /desks/{id}/exec`: ExecResult; the command never running is its typed error; `check` as on the CLI. */
-  async exec(deskId: string, command: string | readonly string[], o: A.RunShapeOptions & ApiCallOptions & { cwd?: string; stdin?: string | Uint8Array; check?: boolean }): Promise<ExecResult> {
+  async exec(deskId: string, command: string | readonly string[], o: A.RunShapeOptions & ApiCallOptions & { cwd?: string; stdin?: string | Uint8Array; check?: boolean; env?: Readonly<Record<string, string>> }): Promise<ExecResult> {
     const spec = this.execSpec(deskId, command, o);
     const path = `${this.desk(deskId)}/exec`;
     const json = await this.json<Record<string, unknown>>('POST', path, { ...o, json: spec });
@@ -238,7 +241,7 @@ export class ApiTransport {
   }
 
   /** `POST /desks/{id}/exec?stream=1`: the ExecEvents as an OutputStream. */
-  execStream(deskId: string, command: string | readonly string[], o: A.RunShapeOptions & ApiCallOptions & { cwd?: string; stdin?: string | Uint8Array | true }): OutputStream {
+  execStream(deskId: string, command: string | readonly string[], o: A.RunShapeOptions & ApiCallOptions & { cwd?: string; stdin?: string | Uint8Array | true; env?: Readonly<Record<string, string>> }): OutputStream {
     if (o.stdin === true) throw notOverApi('execStream with stdin: true (writing stdin as it runs)', 'give `stdin` as text, or use the CLI or native transport');
     const spec = this.execSpec(deskId, command, { ...o, stdin: o.stdin as string | Uint8Array | undefined });
     const path = `${this.desk(deskId)}/exec`;
@@ -308,7 +311,36 @@ export class ApiTransport {
     if (o.keepAwake !== undefined) limits.keep_awake = o.keepAwake;
     const spec: Record<string, unknown> = { name, command: typeof command === 'string' ? [command] : [...command], limits };
     if (o.cwd !== undefined) spec.cwd = o.cwd;
+    if (o.shell !== undefined) spec.shell = A.wireShell(o.shell);
+    if (o.env !== undefined) spec.env = A.checkEnv(o.env);
     return this.json<JobInfo>('POST', `${this.desk(deskId)}/jobs`, { ...o, json: spec });
+  }
+
+  /**
+   * `GET /desks/{id}/jobs/{name}/wait`: `{job, timed_out}` once the job is no
+   * longer running, as `gaiadesk-cli wait --json`. The API holds one wait at
+   * most {@link API_WAIT_MAX} seconds, so a longer (or no) `timeout` waits
+   * again until the job ends or the time is up. A held answer's body may
+   * start with keep-alive spaces, and may be the error envelope.
+   */
+  async waitJob(deskId: string, name: string, o: { timeout?: number | string } & ApiCallOptions): Promise<JobWaitResult> {
+    A.waitArgs(deskId, name, o); // the same UsageErrors as the CLI transport
+    const path = `${this.desk(deskId)}/jobs/${encodeURIComponent(name)}/wait`;
+    const total = o.timeout === undefined ? undefined : seconds(o.timeout, 'timeout');
+    const started = Date.now();
+    for (;;) {
+      const left = total === undefined ? API_WAIT_MAX : Math.max(0, total - (Date.now() - started) / 1000);
+      const json = await this.json<unknown>('GET', path, { ...o, query: { timeout: Math.min(API_WAIT_MAX, Math.ceil(left)) } });
+      const env = errorEnvelope(json);
+      // A held wait that failed after its 200 began: the envelope, in the body.
+      if (env) throw errorForKind(env.kind, env.message || 'the wait failed', envelopeDetails(env, { argv: [`GET ${path}`], json }));
+      if (!isObj(json) || !isObj(json.job) || typeof json.timed_out !== 'boolean') {
+        throw new ProtocolError('the GaiaDesk API answered a wait without a job', { kind: 'protocol', argv: [`GET ${path}`], json });
+      }
+      const r = json as unknown as JobWaitResult;
+      const over = total !== undefined && (Date.now() - started) / 1000 >= total;
+      if (!r.timed_out || over || total === 0) return r;
+    }
   }
 
   /** `GET /desks/{id}/jobs`: the list of the JobList. */

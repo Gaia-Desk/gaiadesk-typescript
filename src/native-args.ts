@@ -10,7 +10,7 @@ type Args = Record<string, unknown>;
 
 function shape(o: A.RunShapeOptions): Args {
   const s: Args = {};
-  if (o.shell !== undefined) s.shell = o.shell;
+  if (o.shell !== undefined) s.shell = A.wireShell(o.shell);
   if (o.timeout !== undefined) s.timeout = A.duration(o.timeout, '--timeout');
   if (o.connectTimeout !== undefined) s.connect_timeout = A.duration(o.connectTimeout, '--connect-timeout');
   if (o.persist !== undefined) s.persist = A.duration(o.persist, '--persist');
@@ -72,7 +72,7 @@ export function runJob(deskId: string, name: string, cmd: string | readonly stri
   if (o.keepAwake !== undefined) limits.keep_awake = o.keepAwake;
   const a: Args = { desk_id: A.checkDesk(deskId), name, command: command(cmd), limits };
   if (o.cwd !== undefined) a.cwd = o.cwd;
-  if (o.shell !== undefined) a.shell = o.shell;
+  if (o.shell !== undefined) a.shell = A.wireShell(o.shell);
   if (o.env !== undefined) a.env = A.checkEnv(o.env);
   return a;
 }
