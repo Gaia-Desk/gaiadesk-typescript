@@ -55,9 +55,7 @@ export type ExecExit = G.ExecExit;
  * One line of `exec --json-stream`: output as it comes, then `exit` (an
  * ExecExit) or, when the command never ran, `error`.
  */
-// The generated ExecEvent drops `event: "exit"` from its ExecExit variant
-// (the schema puts it beside a $ref), so the SDK spells the union itself.
-export type ExecEvent = Exclude<G.ExecEvent, G.ExecExit> | (G.ExecExit & { event: 'exit' });
+export type ExecEvent = G.ExecEvent;
 
 // ───────────────────────────── devices ─────────────────────────────
 

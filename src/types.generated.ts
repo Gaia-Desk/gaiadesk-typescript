@@ -48,7 +48,7 @@ export interface CopyFailure {
   path: string;
 }
 
-/** What a copy is doing, as it goes ([`Desk::cp_up_with_progress`]). */
+/** What a copy is doing, as it goes (`Desk::cp_up_with_progress`). */
 export type CopyProgress = {
   event: "file_done";
   path: string;
@@ -82,7 +82,7 @@ export interface CopyResult {
 }
 
 /** What a desk is doing right now (`gaiadesk-cli stats`,
- * [`super::DataMessage::Stats`]). Every number is a snapshot taken when
+ * `DataMessage::Stats`). Every number is a snapshot taken when
  * asked. */
 export interface DeskStats {
   /** Busy share of the whole machine, 0–100, over a short sample. */
@@ -152,7 +152,7 @@ export interface Disconnected {
   closed: Array<string>;
 }
 
-/** One volume in [`DeskStats`]. */
+/** One volume in `DeskStats`. */
 export interface DiskStat {
   free_mb: number;
   /** Where it is mounted (`/`, `C:\\`). */
@@ -160,11 +160,11 @@ export interface DiskStat {
   total_mb: number;
 }
 
-/** Why a call did not succeed: one of six [`ErrorKind`]s, a sentence for a
+/** Why a call did not succeed: one of six `ErrorKind`s, a sentence for a
  * person, the finer cause where there is one, and the desk it concerned.
  * 
  * Its serde form is the object inside `gaiadesk-cli`'s `--json` error
- * envelope ([`ErrorEnvelope`]): `{"kind", "message", "reason"?, "desk"?}`. */
+ * envelope (`ErrorEnvelope`): `{"kind", "message", "reason"?, "desk"?}`. */
 export interface Error {
   /** The desk it concerned, when there was one. */
   desk?: string | null;
@@ -184,7 +184,7 @@ export interface ErrorEnvelope {
  * breaking change, so match with a wildcard arm anyway. */
 export type ErrorKind = "usage" | "refused" | "unreachable" | "connection_lost" | "failed" | "protocol";
 
-/** One event of a streamed command ([`crate::Desk::exec_stream`]) —
+/** One event of a streamed command (`Desk::exec_stream`) —
  * `gaiadesk-cli exec --json-stream` prints one per line (all but `note`). */
 export type ExecEvent = {
   data: string;
@@ -195,13 +195,15 @@ export type ExecEvent = {
 } | {
   event: "note";
   message: string;
-} | ExecExit | {
+} | (ExecExit & {
+  event: "exit";
+}) | {
   error: Error;
   event: "error";
   exit: number;
 };
 
-/** [`ExecResult`] without the output — the last event of a stream. */
+/** `ExecResult` without the output — the last event of a stream. */
 export interface ExecExit {
   desk: string;
   duration_ms: number;
@@ -241,11 +243,11 @@ export interface ExecResult {
   truncated: boolean;
 }
 
-/** One command to run on a desk ([`crate::Desk::exec`]).
+/** One command to run on a desk (`Desk::exec`).
  * 
  * `command` is ONE command line, given to the shell verbatim; `argv` is an
  * argument vector, each entry quoted for the shell so the program receives
- * exactly it. Build it with [`ExecSpec::command`] or [`ExecSpec::argv`]. */
+ * exactly it. Build it with `ExecSpec::command` or `ExecSpec::argv`. */
 export interface ExecSpec {
   argv?: Array<string>;
   command?: string | null;
@@ -254,13 +256,13 @@ export interface ExecSpec {
   cwd?: string | null;
   shell?: Shell;
   /** Text for its stdin, then end of input. Absent: stdin is closed (the
-   * null device), unless [`crate::ExecInput`] feeds it. */
+   * null device), unless `ExecInput` feeds it. */
   stdin?: string | null;
   /** Stop it after this many seconds (`0`: no limit; absent: 30 minutes). */
   timeout_secs?: number | null;
 }
 
-/** Forwards that are running ([`crate::Desk::forward_start`]). */
+/** Forwards that are running (`Desk::forward_start`). */
 export interface Forward {
   desk: string;
   forward_id: string;
@@ -284,7 +286,7 @@ export interface ForwardSpec {
   remote_port: number;
 }
 
-/** A forward that ended on purpose ([`crate::Client::forward_stop`]). */
+/** A forward that ended on purpose (`Client::forward_stop`). */
 export interface ForwardStopped {
   forward_id: string;
   local_ports: Array<number>;
@@ -315,9 +317,9 @@ export interface Job {
 }
 
 /** What a background job may use, and whether the desk stays awake for it
- * ([`super::DataMessage::JobStart`]'s `limits`). Every field optional and
+ * (`DataMessage::JobStart`'s `limits`). Every field optional and
  * off the wire when unset, so a start without limits is byte for byte what
- * it was. A desk lists [`super::feature::JOB_LIMITS`] when it enforces them;
+ * it was. A desk lists `feature::JOB_LIMITS` when it enforces them;
  * a desk before that ignores the field, which is why a CLI refuses to send
  * caps to one. */
 export interface JobLimits {
@@ -356,7 +358,7 @@ export interface JobLogs {
   output: string;
 }
 
-/** A background job to start ([`crate::Desk::run_job`]). */
+/** A background job to start (`Desk::run_job`). */
 export interface JobSpec {
   /** ONE entry is the command line, verbatim for the desk's shell (`sh -c`,
    * `cmd /c`); several are words, each quoted for THAT desk's shell. */
@@ -411,7 +413,7 @@ export interface MintResult {
   tokens: Array<MintedToken>;
 }
 
-/** An agent token to mint ([`crate::Desk::mint_token`]). */
+/** An agent token to mint (`Desk::mint_token`). */
 export interface MintSpec {
   /** The directory on the desk the token's work is confined to. */
   cwd?: string | null;
@@ -437,7 +439,7 @@ export interface ProbeResult {
   dialled: boolean;
   error?: string | null;
   hostname?: string | null;
-  /** Why not: a [`crate::dial_stage::kind`], an error kind,
+  /** Why not: a `dial_stage::kind`, an error kind,
    * `agent_not_answering` or `no_credential`. */
   kind?: string | null;
   /** Connected AND its agent answered a round trip. */
@@ -450,7 +452,7 @@ export interface ProbeResult {
 /** A connect that did not. */
 export interface ReachFailure {
   at: number;
-  /** A stable key: a [`crate::dial_stage::kind`] or an error kind. */
+  /** A stable key: a `dial_stage::kind` or an error kind. */
   kind: string;
   /** One line, as the CLI said it. */
   message: string;
