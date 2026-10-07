@@ -1,0 +1,14 @@
+# TypeScript
+node_modules/
+typescript/dist/
+*.tgz
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+.DS_Store
