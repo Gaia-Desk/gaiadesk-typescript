@@ -26,6 +26,18 @@
   streams fill `result` / `error` too.
 - Feature detection: `versionInfo()` (`--version --json`, null on an older
   CLI) and `features()`, asked once per CLI path.
+- `jobLogs`, `followJobLogs`, `meshIp`, `disconnect` and `agentConnect` use
+  the `--json` forms of 0.10.324 (`logs_json`, `mesh_ip_json`,
+  `disconnect_json`, `agent_connect_json`), so their failures are typed by
+  the error envelope; an older CLI's text is still read. `disconnect()` now
+  returns `{closed: [...]}` (both backends); a `followJobLogs` failure is on
+  `wait()`'s `error`.
+- `cwd` for `shell` and `shellStream` (`shell --cwd`, feature `shell_cwd`;
+  an older CLI is a `UsageError`).
+- `createToken` returns the generated `MintResult`, or with `out` the
+  generated `TokenFileResult` (`{tokens[{desk, token}], file}`); the
+  hand-written `TokenCreateResult` is now their union. `MeshIp`,
+  `Disconnected` and `AgentCheck` are exported.
 - `jobs()`, `listTokens()` and `audit()` accept `{"jobs"}` / `{"tokens"}` /
   `{"events"}` objects and bare arrays; on the native backend `jobLogs()`
   and `meshIp()` accept `{output}` / `{mesh_ip}` objects and strings.

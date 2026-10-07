@@ -103,11 +103,12 @@ export function execArgs(
   return a;
 }
 
-/** `shell --desk-id <id> [flags]`, with a script on stdin (non-interactive: plain pipes, like exec). */
-export function shellArgs(deskId: string, o: RunShapeOptions, json: boolean): string[] {
+/** `shell --desk-id <id> [flags] [--cwd <dir>]`, with a script on stdin (non-interactive: plain pipes, like exec). */
+export function shellArgs(deskId: string, o: RunShapeOptions & { cwd?: string }, json: boolean): string[] {
   const a = ['shell', '--desk-id', checkDesk(deskId), '--quiet'];
   if (json) a.push('--json');
   a.push(...shapeFlags(o));
+  if (o.cwd !== undefined) a.push('--cwd', checkCwd(o.cwd));
   return a;
 }
 
@@ -176,9 +177,11 @@ export function runArgs(deskId: string, name: string, command: string | readonly
 export const psArgs = (deskId: string) => ['ps', '--desk-id', checkDesk(deskId), '--json'];
 export const killArgs = (deskId: string, name: string) => ['kill', checkJobName(name), '--desk-id', checkDesk(deskId), '--json'];
 
-export function logsArgs(deskId: string, name: string, o: { tail?: number; follow?: boolean }): string[] {
+/** `logs <job> --desk-id <id> [--follow] [--tail n] [--json]` (`--json`: gaiadesk-cli 0.10.324+, feature `logs_json`). */
+export function logsArgs(deskId: string, name: string, o: { tail?: number; follow?: boolean; json?: boolean }): string[] {
   const a = ['logs', checkJobName(name), '--desk-id', checkDesk(deskId)];
   if (o.follow) a.push('--follow');
+  if (o.json) a.push('--json');
   if (o.tail !== undefined) {
     if (!Number.isInteger(o.tail) || o.tail < 0) throw new UsageError('tail is a number of bytes', { kind: 'usage' });
     a.push('--tail', String(o.tail));
@@ -288,13 +291,23 @@ export function forwardArgs(deskId: string, specs: readonly ForwardSpec[]): stri
   return a;
 }
 
-export function disconnectArgs(deskId?: string): string[] {
-  return deskId === undefined ? ['disconnect', '--all'] : ['disconnect', '--desk-id', checkDesk(deskId)];
+/** `--json` on these: gaiadesk-cli 0.10.324+ (features `disconnect_json`, `agent_connect_json`, `mesh_ip_json`). */
+export function disconnectArgs(deskId?: string, json = false): string[] {
+  const a = deskId === undefined ? ['disconnect', '--all'] : ['disconnect', '--desk-id', checkDesk(deskId)];
+  if (json) a.push('--json');
+  return a;
 }
 
-export function agentConnectArgs(deskId: string, server?: string): string[] {
+export function agentConnectArgs(deskId: string, server?: string, json = false): string[] {
   const a = ['agent-connect', '--desk-id', checkDesk(deskId)];
   if (server) a.push('--server', server);
+  if (json) a.push('--json');
+  return a;
+}
+
+export function meshIpArgs(deskId: string, json = false): string[] {
+  const a = ['mesh', 'ip', checkDesk(deskId)];
+  if (json) a.push('--json');
   return a;
 }
 

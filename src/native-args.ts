@@ -27,15 +27,19 @@ export function exec(deskId: string, cmd: string | readonly string[], o: A.RunSh
   return a;
 }
 
-export function shell(deskId: string, script: string, o: A.RunShapeOptions): Args {
+export function shell(deskId: string, script: string, o: A.RunShapeOptions & { cwd?: string }): Args {
   A.shellArgs(deskId, o, true);
-  return { desk_id: A.checkDesk(deskId), script, ...shape(o) };
+  const a: Args = { desk_id: A.checkDesk(deskId), script, ...shape(o) };
+  if (o.cwd !== undefined) a.cwd = o.cwd;
+  return a;
 }
 
 /** The streaming shell: no script field (it is written to stdin). */
-export function shellStream(deskId: string, o: A.RunShapeOptions): Args {
+export function shellStream(deskId: string, o: A.RunShapeOptions & { cwd?: string }): Args {
   A.shellArgs(deskId, o, false);
-  return { desk_id: A.checkDesk(deskId), ...shape(o) };
+  const a: Args = { desk_id: A.checkDesk(deskId), ...shape(o) };
+  if (o.cwd !== undefined) a.cwd = o.cwd;
+  return a;
 }
 
 export function devices(o: { probe?: boolean; deskId?: string }): Args {

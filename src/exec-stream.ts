@@ -3,7 +3,9 @@
 // - JsonExecStream: `exec --json-stream` (gaiadesk-cli 0.10.324+, feature
 //   `exec_json_stream`): one JSON event per line, turned back into the same
 //   stdout/stderr chunks a plain stream gives, with the run's end (`exit` or
-//   `error` event) on wait().
+//   `error` event) on wait(). Also `logs --follow --json` (feature
+//   `logs_json`): its `output` events as stdout, `end` / `interrupted` as the
+//   end, and a failure's error envelope as wait()'s `error`.
 // - DeferredStream: an OutputStream whose real stream starts once something
 //   asynchronous is known (which CLI features there are). Writes and kills
 //   before then are queued.
@@ -74,7 +76,12 @@ export class JsonExecStream implements OutputStream {
   private last: ExecEvent | null = null;
   private readonly exited: Promise<Exit>;
 
-  constructor(inv: Invocation, keepStdinOpen = false) {
+  /** `kind`: `exec` (`exec --json-stream`) or `logs` (`logs --follow --json`). */
+  constructor(
+    inv: Invocation,
+    keepStdinOpen = false,
+    private readonly kind: 'exec' | 'logs' = 'exec',
+  ) {
     this.argv = inv.args;
     this.inner = new CliStream(inv, keepStdinOpen);
     this.exited = this.run();
@@ -83,6 +90,7 @@ export class JsonExecStream implements OutputStream {
 
   private onLine(line: string): void {
     if (!line.trim()) return;
+    if (this.kind === 'logs') return this.onLogLine(line);
     const ev = parseExecEvent(line);
     if (!ev) return;
     if ((ev.event === 'stdout' || ev.event === 'stderr') && typeof ev.data === 'string') {
@@ -90,6 +98,23 @@ export class JsonExecStream implements OutputStream {
       this.wake();
     } else if (ev.event === 'exit' || ev.event === 'error') {
       this.last = ev;
+    }
+  }
+
+  /** One line of `logs --follow --json`: `{"event":"output","data"}`, `end`, `interrupted`, or an error envelope. */
+  private onLogLine(line: string): void {
+    let v: unknown;
+    try {
+      v = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!isObj(v)) return;
+    if (v.event === 'output' && typeof v.data === 'string') {
+      this.queue.push({ stream: 'stdout', data: new TextEncoder().encode(v.data) });
+      this.wake();
+    } else if (v.event === 'error' || (v.event === undefined && isObj(v.error))) {
+      this.last = { event: 'error', error: v.error } as unknown as ExecEvent;
     }
   }
 

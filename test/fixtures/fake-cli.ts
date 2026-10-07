@@ -7,11 +7,14 @@
 //   fake-cli.js       gaiadesk-cli 0.10.324+: `--version --json`, one error
 //                     envelope {"error": {kind, message, reason?, desk?}},
 //                     {"jobs"}/{"tokens"}/{"events"} objects, `exec
-//                     --json-stream`, `--cwd`, MCP tools named gaiadesk_*.
+//                     --json-stream`, `--cwd` (exec, run, shell), `--json`
+//                     on logs / mesh ip / disconnect / agent-connect, MCP
+//                     tools named gaiadesk_*.
 //   fake-cli-old.js   an older CLI (sets FAKE_CLI=old, then runs this file):
 //                     version as text, {"error": "<text>"} / {"refused"} /
 //                     exec's old kinds, bare arrays, no --json-stream or
-//                     --cwd (an unknown flag), dotted MCP tool names.
+//                     --cwd (an unknown flag), text from logs / mesh ip /
+//                     disconnect / agent-connect, dotted MCP tool names.
 // They are two paths, as two installed CLIs would be (the SDK caches what a
 // CLI supports per path).
 //
@@ -191,7 +194,8 @@ async function mcp(): Promise<number> {
 /** An older CLI does not know these flags. */
 function unknownFlag(): number | null {
   if (!OLD) return null;
-  const f = ['--json-stream', '--cwd'].find(has);
+  const textOnly = ['logs', 'disconnect', 'agent-connect'].includes(argv[0]) || (argv[0] === 'mesh' && argv[1] === 'ip');
+  const f = ['--json-stream', '--cwd', ...(textOnly ? ['--json'] : [])].find(has);
   if (!f) return null;
   err(`gaiadesk-cli: unknown flag ${f}`);
   return 255;
@@ -214,7 +218,10 @@ async function main(): Promise<number> {
         out({
           name: 'gaiadesk-cli',
           version: '0.10.324',
-          features: ['json_error_envelope', 'json_v1_shapes', 'exec_json_stream', 'exec_cwd', 'run_cwd', 'mcp_lifecycle', 'mcp_underscore_tool_names'],
+          features: [
+            'json_error_envelope', 'json_v1_shapes', 'exec_json_stream', 'exec_cwd', 'run_cwd', 'shell_cwd',
+            'logs_json', 'mesh_ip_json', 'disconnect_json', 'agent_connect_json', 'mcp_lifecycle', 'mcp_underscore_tool_names',
+          ],
           json_shapes: ['v1', 'v2'],
           mcp_protocol_versions: ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'],
         });
@@ -237,7 +244,7 @@ async function main(): Promise<number> {
       return execLike(desk, afterDashes(), has('--stdin') ? stdin : '', mode, flag('--cwd'));
     }
     case 'shell':
-      return execLike(desk, [`script:${stdin.trim()}`], '', has('--json') ? 'json' : 'plain');
+      return execLike(desk, [`script:${stdin.trim()}`], '', has('--json') ? 'json' : 'plain', flag('--cwd'));
     case 'cp': {
       const pos = argv.slice(1).filter((a) => !a.startsWith('-'));
       const [src, dst] = pos;
@@ -276,6 +283,21 @@ async function main(): Promise<number> {
       return 0;
     }
     case 'logs':
+      if (has('--json')) {
+        if (argv[1] === 'nope') return fail('failed', 'no job named nope', 1, {}, { desk });
+        if (has('--follow')) {
+          for (const l of ['one', 'two', 'three']) {
+            out({ event: 'output', data: `${l}\n` });
+            await sleep(20);
+          }
+          if (argv[1] === 'lost') return fail('connection_lost', 'the connection to the desk was lost', 255, {}, { desk });
+          out({ event: 'end', job: job(argv[1], { state: 'exited', exit_code: 0 }) });
+          err(`job ${argv[1]} exited (exit 0)`);
+          return 0;
+        }
+        out({ job: job(argv[1]), output: flag('--tail') ? 'tail\n' : 'line1\nline2\n' });
+        return 0;
+      }
       if (has('--follow')) {
         for (const l of ['one', 'two', 'three']) {
           out(l);
@@ -340,14 +362,16 @@ async function main(): Promise<number> {
         return 0;
       }
       if (argv[2] === OK) {
-        out('100.64.0.2');
+        out(has('--json') ? { desk_id: OK, mesh_ip: '100.64.0.2', renamed_to: null } : '100.64.0.2');
         return 0;
       }
-      err(`gaiadesk-cli: desk ${argv[2]} is not on this machine's GaiaDesk Mesh`);
-      return 1;
-    case 'disconnect':
-      err('gaiadesk-cli: closed the held connection to desk ' + (desk ?? 'all'));
+      return fail('failed', `desk ${argv[2]} is not on this machine's GaiaDesk Mesh`, 1, {}, { desk: argv[2] });
+    case 'disconnect': {
+      const closed = [desk ?? OK];
+      for (const d of closed) err(`gaiadesk-cli: closed the held connection to desk ${d}`);
+      if (has('--json')) out({ closed });
       return 0;
+    }
     case 'forward': {
       const pairs = argv.slice(1).filter((a) => a !== '--json');
       const d = pairs[0].split(':')[0];
@@ -371,10 +395,10 @@ async function main(): Promise<number> {
     }
     case 'agent-connect':
       if (!process.env.GAIADESK_AGENT_TOKEN) {
-        err('gaiadesk-cli: an agent token is required (--token, or $GAIADESK_AGENT_TOKEN)');
-        return 255;
+        return fail('usage', 'an agent token is required (--token, or $GAIADESK_AGENT_TOKEN)', 255, {});
       }
-      out(`agent session open on desk ${desk}: screenshot 1280x800`);
+      if (desk === REFUSED) return fail('refused', 'the desk refused the agent session: no `screen` scope', 254, {}, { desk });
+      out(has('--json') ? { desk_id: desk, ok: true, screenshot: { width: 1280, height: 800 } } : `agent session open on desk ${desk}: screenshot 1280x800`);
       return 0;
     default:
       err(`gaiadesk-cli: unknown subcommand ${JSON.stringify(cmd)}`);

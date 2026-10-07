@@ -149,7 +149,7 @@ export function makeMock(o: { old?: boolean } = {}) {
           return execResult(d, typeof args.command === 'string' ? args.command : args.command.join(' '), text(o.input), args.cwd);
         case 'shell':
           reach(d);
-          return execResult(d, `script:${args.script.trim()}`);
+          return execResult(d, `script:${args.script.trim()}`, undefined, args.cwd);
         case 'upload':
         case 'download': {
           reach(d);
@@ -196,7 +196,7 @@ export function makeMock(o: { old?: boolean } = {}) {
         case 'mesh_ip':
           return OLD ? '100.64.0.1' : { desk_id: d, mesh_ip: '100.64.0.1', renamed_to: null };
         case 'disconnect':
-          return null;
+          return OLD ? null : { closed: d ? [d] : [] };
         default:
           throw nativeError('usage', `unknown op ${op}`);
       }

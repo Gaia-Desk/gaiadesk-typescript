@@ -80,6 +80,8 @@ test('exec: the ops and arguments the native library gets', async () => {
   assert.deepEqual(calls[0], { op: 'exec', args: { desk_id: OK, command: ['ls', '-l'], shell: 'sh', timeout: '90', connect_timeout: '30s' }, input: 'hi', signal: false });
   await assert.rejects(gd.exec(OK, 'exit 3', { check: true }), (e: unknown) => e instanceof CommandError && (e.result as { exit: number }).exit === 3);
   assert.equal((await gd.shell(OK, 'echo hi\n')).stdout, 'ran: script:echo hi\n');
+  assert.equal((await gd.shell(OK, 'echo hi\n', { cwd: '/srv/app' })).stdout, 'ran: script:echo hi\nin: /srv/app\n');
+  assert.equal(calls.at(-1)?.args.cwd, '/srv/app', 'shell cwd reaches the native library');
 });
 
 test('every other operation maps to its op', async () => {
@@ -101,8 +103,8 @@ test('every other operation maps to its op', async () => {
   assert.equal((await gd.audit(OK, { limit: 5 }))[0].action, 'exec.end');
   await gd.meshStatus();
   assert.equal(await gd.meshIp(OK), '100.64.0.1');
-  await gd.disconnect(OK);
-  await gd.disconnect();
+  assert.deepEqual(await gd.disconnect(OK), { closed: [OK] });
+  assert.deepEqual(await gd.disconnect(), { closed: [] });
   assert.equal(await gd.version(), 'gaiadesk-native 0.10.323');
   const byOp = Object.fromEntries(calls.map((c) => [c.op, c.args]));
   assert.deepEqual(byOp.job_run, { desk_id: OK, name: 'build', command: 'make', limits: { priority: 'low', cpu_percent: 50, mem_mb: 4096, keep_awake: true } });

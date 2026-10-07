@@ -186,26 +186,26 @@ Every result is the CLI's JSON, with the CLI's field names (types in
 | `probe(deskId)` | `devices --probe -d` | one device row with `probe` |
 | `exec(deskId, command, opts)` | `exec --json` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
 | `execStream(deskId, command, opts)` | `exec --json-stream` (0.10.324+), else `exec` | a stream of stdout/stderr chunks; `wait()` gives the exit code, and with `--json-stream` the run's `result` and `error` |
-| `shell(deskId, script, opts)` | `shell --json`, script on stdin | as `exec` |
-| `shellStream(deskId, script?, opts)` | `shell` | stream; without a script, stdin stays open for `write()`/`end()` |
+| `shell(deskId, script, opts)` | `shell --json [--cwd]`, script on stdin | as `exec` |
+| `shellStream(deskId, script?, opts)` | `shell [--cwd]` | stream; without a script, stdin stays open for `write()`/`end()` |
 | `upload(local, deskId, remote, {recursive})` | `cp --json <local> <desk>:<remote>` | `{direction, desk, destination, files, dirs, bytes, resumed_bytes, failed[], seconds}` |
 | `download(deskId, remote, local, {recursive})` | `cp --json <desk>:<remote> <local>` | as above |
 | `runJob(deskId, name, command, {priority, cpu, mem, keepAwake, cwd})` | `run --detach --json` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement}` |
 | `jobs(deskId)` | `ps --json` | job[] (from `{"jobs": [...]}` or a bare array) |
-| `jobLogs(deskId, name, {tail})` | `logs` | output text |
-| `followJobLogs(deskId, name)` | `logs -f` | stream |
+| `jobLogs(deskId, name, {tail})` | `logs --json` (0.10.324+), else `logs` | output text (the `output` of `{job, output}`) |
+| `followJobLogs(deskId, name)` | `logs -f --json` (0.10.324+), else `logs -f` | stream; `wait()`'s `error` says why following failed |
 | `killJob(deskId, name)` | `kill --json` | job |
 | `stats(deskId)` | `stats --json` | `{desk, hostname, os, os_version, cpu_percent, cpus, load, mem_total_mb, mem_free_mb, disks[], uptime_secs, jobs_running}` |
 | `measure(deskId, {count})` | `measure --json` | `{desk, sent, rtt_ms{n,p50,p95,max}, clock_offset_ms, clock_uncertainty_ms}` |
-| `createToken({desks, name, expires, scopes, cwd, lowPriv, out})` | `token create --json` | `{tokens[{desk, token, secret?}], file?}` |
+| `createToken({desks, name, expires, scopes, cwd, lowPriv, out})` | `token create --json` | `MintResult` `{tokens[{desk, token, secret}]}`; with `out`, `TokenFileResult` `{tokens[{desk, token}], file}` |
 | `listTokens(deskId)` | `token list --json` | token[] (from `{"tokens": [...]}` or a bare array) `{label, id, scopes, issued_at_ms, expires_at_ms, revoked, last_used_ms, cwd, low_priv}` |
 | `revokeToken(deskId, nameOrId \| {all:true}, {account})` | `token revoke --json` | `{revoked, stopped_sessions}` or (account) `{desk, ok, message}` |
 | `audit(deskId, {token, limit, account})` | `audit --json` | event[] (from `{"events": [...]}` or a bare array) `{at_ms, desk, token, token_id, action, detail, bytes, cwd, exit_code, duration_ms}` |
 | `meshStatus()` | `mesh status --json` | `{self, peers[]}` |
-| `meshIp(deskId)` | `mesh ip` | the address |
-| `disconnect(deskId?)` | `disconnect --desk-id \| --all` | nothing |
+| `meshIp(deskId)` | `mesh ip --json` (0.10.324+), else `mesh ip` | the address |
+| `disconnect(deskId?)` | `disconnect --desk-id \| --all [--json]` | `{closed[]}` |
 | `forward(deskId, spec \| spec[])` | `forward --json` | handle with `listening[]`, `close()` and `done` |
-| `agentConnect(deskId)` | `agent-connect` | the CLI's confirmation line |
+| `agentConnect(deskId)` | `agent-connect --json` (0.10.324+), else `agent-connect` | the confirmation line ("agent session open on desk N: screenshot WxH") |
 | `mcp({auditDir, allowDomains})` | `mcp` (stdio) | an MCP client: `listTools()`, `callTool(name, args)`, `close()` |
 | `raw(args, {input})` | anything | `{code, stdout, stderr}`: the escape hatch |
 
@@ -321,7 +321,7 @@ When should a model drive the desk instead of your code? See
 
 Things the CLI does not (yet) offer, so neither does the SDK (the Python SDK has the same list):
 
-1. **`cwd` needs gaiadesk-cli 0.10.324+.** An older CLI has no `--cwd`: the
+1. **`cwd` needs gaiadesk-cli 0.10.324+** (`exec_cwd`, `run_cwd`, `shell_cwd`). An older CLI has no `--cwd`: the
    SDK refuses the option (`UsageError`) rather than run the command
    elsewhere. A token minted with `--cwd` starts every command there on any
    CLI; otherwise write it into the command line (`cd /srv/app && make`).
@@ -332,11 +332,12 @@ Things the CLI does not (yet) offer, so neither does the SDK (the Python SDK has
    at all). With such a CLI, pass `runJob` an **argument array** for POSIX
    desks (`['make', '-j8']`, `['sh', '-c', 'cd /srv && make']`). 0.10.324
    (feature `run_verbatim_command`) passes one string verbatim.
-3. **Text where a newer CLI has JSON.** `jobLogs` (`logs`), `meshIp`
-   (`mesh ip`), `disconnect` and `agentConnect` read the CLI's text, which
-   every CLI prints (0.10.324 also has `--json` for them; the native backend
-   returns the same values). `forward --json` prints only `listening`
-   events.
+3. **Text from older CLIs.** `jobLogs` / `followJobLogs` (`logs`), `meshIp`
+   (`mesh ip`), `disconnect` and `agentConnect` use `--json` on a CLI that
+   lists `logs_json`, `mesh_ip_json`, `disconnect_json` and
+   `agent_connect_json` (0.10.324+), and read an older CLI's text otherwise
+   (its failures then have no kind, see 4). `forward --json` prints only
+   `listening` events.
 4. **Older CLIs: desk-operation failures have no kind.** Before 0.10.324, when
    `cp`, `run`, `ps`, `kill`, `stats`, `measure`, `token` or `audit` could not
    reach the desk, the CLI printed a sentence and exited 254 or 255; the SDK
@@ -353,8 +354,7 @@ Things the CLI does not (yet) offer, so neither does the SDK (the Python SDK has
    `Exit.error` are then absent). `exec --json` buffers the whole output (up
    to 16 MB per stream) on every CLI.
 7. **No interactive terminal.** `shell` is interactive only on a real TTY;
-   the SDK runs it over pipes (a script, or lines you write). `shell` has no
-   `cwd`.
+   the SDK runs it over pipes (a script, or lines you write).
 8. **Durations** are whole seconds or `30s`/`10m`/`2h`-style strings;
    fractional seconds are rounded up.
 9. **Not wrapped:** `gaiadesk-cli login`/`logout` (interactive device flow;

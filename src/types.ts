@@ -98,16 +98,14 @@ export type TokenInfo = G.TokenInfo;
 /** `token list --json` (0.10.324+; older CLIs print the bare array). */
 export type TokenList = G.TokenList;
 
-/**
- * `token create --json`: one entry per desk. `secret` (the token, shown once)
- * only without `out`; with `out`, `file` names the file written instead.
- */
-// Hand-written: the schema's MintResult is the `secret` form only.
-export interface TokenCreateResult {
-  tokens: Array<Omit<G.MintedToken, 'secret'> & { secret?: string }>;
-  /** The `--out` file, when one was written. */
-  file?: string;
-}
+/** `token create --json` without `out`: one token per desk, each with its `secret` (shown once). */
+export type MintResult = G.MintResult;
+export type MintedToken = G.MintedToken;
+/** `token create --out <file> --json`: one entry per desk without the secret, and the `file` it is in. */
+export type TokenFileResult = G.MintFileResult;
+export type MintedTokenFiled = G.MintedTokenFiled;
+/** `token create --json`, either form (`createToken` narrows it by `out`). */
+export type TokenCreateResult = MintResult | TokenFileResult;
 
 /** `token revoke --json` against the desk. */
 export type TokenRevokeResult = G.Revoked;
@@ -123,6 +121,12 @@ export type AuditLog = G.AuditLog;
 
 /** `mesh status --json`. */
 export type MeshStatus = G.MeshStatus;
+/** `mesh ip <desk> --json`: its Mesh address, and `renamed_to` when the desk has a new id. */
+export type MeshIp = G.MeshIp;
+/** `disconnect --json`: the desks whose held connection was closed. */
+export type Disconnected = G.Disconnected;
+/** `agent-connect --json`: a screen session opened, and its first screenshot's size. */
+export type AgentCheck = G.AgentCheck;
 /** `forward --json`: printed once per forward when it is listening. */
 export type ForwardListening = G.ForwardListening;
 

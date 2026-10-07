@@ -1,8 +1,9 @@
 // The GaiaDesk client: each method runs one gaiadesk-cli command (with --json
 // where the CLI has it) and returns the CLI's own JSON, typed. Works with
 // gaiadesk-cli 0.10.324+ (one error envelope, object list shapes,
-// `--json-stream`, `--cwd`; checked through `--version --json`) and with
-// older CLIs (their shapes are read too). When the
+// `--json-stream`, `--cwd`, `--json` on logs / mesh ip / disconnect /
+// agent-connect; checked through `--version --json`) and with older CLIs
+// (their shapes and text are read too). When the
 // native library (@gaiadesk/sdk-native, an optional dependency) is installed,
 // the same methods run on it instead: no gaiadesk-cli needed, same results,
 // same errors (see `backend`).
@@ -34,16 +35,22 @@ import { listOf, neverRan, normalizeExecResult, textOf } from './results.js';
 import type {
   AbortSignalLike,
   AccountRevokeResult,
+  AgentCheck,
   AuditEvent,
   CpSummary,
   DeskStats,
   DevicesResult,
+  Disconnected,
   ExecResult,
   ForwardListening,
   JobInfo,
+  JobLogs,
   MeasureResult,
+  MeshIp,
   MeshStatus,
+  MintResult,
   TokenCreateResult,
+  TokenFileResult,
   TokenInfo,
   TokenRevokeResult,
   VersionInfo,
@@ -139,6 +146,11 @@ function parseJson(stdout: string): unknown {
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** `{closed: [...]}` from a disconnect result (an older native build returns nothing). */
+function closedOf(v: unknown): Disconnected {
+  return { closed: isObj(v) && Array.isArray(v.closed) ? v.closed.filter((d): d is string => typeof d === 'string') : [] };
 }
 
 export class GaiaDesk {
@@ -256,6 +268,11 @@ export class GaiaDesk {
     requireFeature(await this.versionInfo(), feature);
   }
 
+  /** Does gaiadesk-cli list `feature` (a `--json` form it has; else the SDK reads its text)? */
+  private async has(feature: string): Promise<boolean> {
+    return (await this.features()).has(feature);
+  }
+
   /** `gaiadesk-cli --version` (e.g. "gaiadesk-cli 0.10.324"); on the native backend "gaiadesk-native <version>". */
   async version(): Promise<string> {
     const n = this.nat();
@@ -357,11 +374,14 @@ export class GaiaDesk {
    * `shell --json` with `script` on stdin: the script runs in the desk's
    * shell over plain pipes (handed whole to the shell on macOS/Linux; on
    * Windows cmd.exe reads it line by line). The exit code is the script's.
+   * `cwd`: where it starts on the desk (`shell --cwd`; gaiadesk-cli 0.10.324+,
+   * feature `shell_cwd`, else a UsageError; or the native library).
    */
-  async shell(deskId: string, script: string, o: Omit<ExecOptions, 'stdin' | 'cwd'> = {}): Promise<ExecResult> {
+  async shell(deskId: string, script: string, o: Omit<ExecOptions, 'stdin'> = {}): Promise<ExecResult> {
     const n = this.nat();
     if (n) return n.exec('shell', N.shell(deskId, script, o), { signal: o.signal, check: o.check });
     const args = A.shellArgs(deskId, o, true);
+    if (o.cwd !== undefined) await this.require('shell_cwd');
     const done = await runCli(this.inv(args, script, o.signal));
     return this.execOutcome(done, args, o.check);
   }
@@ -370,12 +390,15 @@ export class GaiaDesk {
    * `shell` (no --json), streaming. With `script`, it is written and stdin is
    * closed; without one, stdin stays open: `write()` lines, then `end()`.
    * Not a terminal: no prompt, no echo (an interactive PTY needs a real terminal).
+   * `cwd` as for shell() (on an older CLI: a UsageError from iteration and wait()).
    */
-  shellStream(deskId: string, script?: string, o: A.RunShapeOptions & CallOptions = {}): OutputStream {
+  shellStream(deskId: string, script?: string, o: A.RunShapeOptions & CallOptions & { cwd?: string } = {}): OutputStream {
     const n = this.nat();
     if (n) return n.stream('shell', N.shellStream(deskId, o), { stdin: script ?? true, signal: o.signal });
     const args = A.shellArgs(deskId, o, false);
-    return new CliStream(this.inv(args, script, o.signal), script === undefined);
+    if (o.cwd === undefined) return new CliStream(this.inv(args, script, o.signal), script === undefined);
+    const start = this.require('shell_cwd').then(() => new CliStream(this.inv(args, script, o.signal), script === undefined));
+    return new DeferredStream(args, start);
   }
 
   // ───────────────────────────── cp ─────────────────────────────
@@ -424,21 +447,40 @@ export class GaiaDesk {
     return this.op<JobInfo>(A.killArgs(deskId, name), [0], c);
   }
 
-  /** `logs <job>` (no --json exists): the job's output so far, stdout and stderr together. */
+  /**
+   * `logs <job> --json` (gaiadesk-cli 0.10.324+, feature `logs_json`; an
+   * older CLI's plain `logs` is read as text): the job's output so far,
+   * stdout and stderr together.
+   */
   async jobLogs(deskId: string, name: string, o: { tail?: number } & CallOptions = {}): Promise<string> {
     const n = this.nat();
     if (n) return textOf(await n.call('job_logs', N.logs(deskId, name, o.tail), o), 'output');
-    const args = A.logsArgs(deskId, name, { tail: o.tail });
-    const done = await runCli(this.inv(args, undefined, o.signal));
-    if (done.code !== 0) throw this.failure(done, args, undefined);
+    const plain = A.logsArgs(deskId, name, { tail: o.tail });
+    if (await this.has('logs_json')) {
+      return textOf(await this.op<JobLogs>(A.logsArgs(deskId, name, { tail: o.tail, json: true }), [0], o), 'output');
+    }
+    const done = await runCli(this.inv(plain, undefined, o.signal));
+    if (done.code !== 0) throw this.failure(done, plain, undefined);
     return done.stdout;
   }
 
-  /** `logs -f <job>`: follow until the job ends; `kill()` stops following (not the job). */
+  /**
+   * `logs -f <job>`: follow until the job ends; `kill()` stops following (not
+   * the job). On gaiadesk-cli 0.10.324+ (`logs_json`) it runs `logs -f
+   * --json`: the same chunks, and a failure's `{kind, message}` on wait()'s `error`.
+   */
   followJobLogs(deskId: string, name: string, o: { tail?: number } & CallOptions = {}): OutputStream {
     const n = this.nat();
     if (n) return n.stream('job_follow', N.logs(deskId, name, o.tail), { signal: o.signal });
-    return new CliStream(this.inv(A.logsArgs(deskId, name, { tail: o.tail, follow: true }), undefined, o.signal));
+    const plain = A.logsArgs(deskId, name, { tail: o.tail, follow: true });
+    const start = (async (): Promise<OutputStream> => {
+      if (await this.has('logs_json')) {
+        const args = A.logsArgs(deskId, name, { tail: o.tail, follow: true, json: true });
+        return new JsonExecStream(this.inv(args, undefined, o.signal), false, 'logs');
+      }
+      return new CliStream(this.inv(plain, undefined, o.signal));
+    })();
+    return new DeferredStream(plain, start);
   }
 
   // ───────────────────────────── stats / measure ─────────────────────────────
@@ -461,8 +503,13 @@ export class GaiaDesk {
 
   /**
    * `token create --json`. Owner only: needs the desk's unattended password
-   * (the `code` option). Without `out`, each entry carries the `secret`, shown once.
+   * (the `code` option). Without `out`, each entry carries the `secret`, shown
+   * once (a `MintResult`); with `out`, the secrets are only in that file and
+   * the result is a `TokenFileResult` (`{tokens[{desk, token}], file}`).
    */
+  createToken(o: A.TokenCreateOptions & { out: string } & CallOptions): Promise<TokenFileResult>;
+  createToken(o: A.TokenCreateOptions & { out?: undefined } & CallOptions): Promise<MintResult>;
+  createToken(o: A.TokenCreateOptions & CallOptions): Promise<TokenCreateResult>;
   createToken(o: A.TokenCreateOptions & CallOptions): Promise<TokenCreateResult> {
     const n = this.nat();
     if (n) return n.call<TokenCreateResult>('token_mint', N.tokenCreate(o), o);
@@ -505,26 +552,33 @@ export class GaiaDesk {
     return this.op<MeshStatus>(['mesh', 'status', '--json'], [0], c);
   }
 
-  /** `mesh ip <desk>` (plain text; no --json exists). */
+  /**
+   * `mesh ip <desk> --json` (gaiadesk-cli 0.10.324+, feature `mesh_ip_json`;
+   * an older CLI's text is read): the desk's Mesh address.
+   */
   async meshIp(deskId: string, c: CallOptions = {}): Promise<string> {
     const n = this.nat();
     if (n) return textOf(await n.call('mesh_ip', N.desk(deskId), c), 'mesh_ip');
-    const args = ['mesh', 'ip', A.checkDesk(deskId)];
+    if (await this.has('mesh_ip_json')) return textOf(await this.op<MeshIp>(A.meshIpArgs(deskId, true), [0], c), 'mesh_ip');
+    const args = A.meshIpArgs(deskId);
     const done = await runCli(this.inv(args, undefined, c.signal));
     if (done.code !== 0) throw this.failure(done, args, undefined);
     return done.stdout.trim();
   }
 
-  /** `disconnect`: close the held connection to one desk, or to all (no argument). */
-  async disconnect(deskId?: string, c: CallOptions = {}): Promise<void> {
+  /**
+   * `disconnect --json`: close the held connection to one desk, or to all
+   * (no argument): `{closed: [desk ids]}` (from an older CLI, read from its
+   * stderr lines).
+   */
+  async disconnect(deskId?: string, c: CallOptions = {}): Promise<Disconnected> {
     const n = this.nat();
-    if (n) {
-      await n.call('disconnect', N.disconnect(deskId), c);
-      return;
-    }
+    if (n) return closedOf(await n.call('disconnect', N.disconnect(deskId), c));
+    if (await this.has('disconnect_json')) return closedOf(await this.op<Disconnected>(A.disconnectArgs(deskId, true), [0], c));
     const args = A.disconnectArgs(deskId);
     const done = await runCli(this.inv(args, undefined, c.signal));
     if (done.code !== 0) throw this.failure(done, args, undefined);
+    return { closed: [...done.stderr.matchAll(/closed the held connection to desk (\S+)/g)].map((m) => m[1]) };
   }
 
   // ───────────────────────────── forward ─────────────────────────────
@@ -588,11 +642,17 @@ export class GaiaDesk {
   /**
    * `agent-connect`: prove an agent token opens a screen session on the desk
    * (one screenshot round trip). Needs `agentToken` (or $GAIADESK_AGENT_TOKEN).
-   * Returns the CLI's line, e.g. "agent session open on desk N: screenshot 1280x800".
+   * Returns the CLI's line, e.g. "agent session open on desk N: screenshot
+   * 1280x800"; on gaiadesk-cli 0.10.324+ (`agent_connect_json`) made from its
+   * `--json` object, so a refusal is typed by the error envelope.
    */
   async agentConnect(deskId: string, c: CallOptions = {}): Promise<string> {
     const n = this.nat();
     if (n) return n.agentConnect(A.checkDesk(deskId), c.signal);
+    if (await this.has('agent_connect_json')) {
+      const r = await this.op<AgentCheck>(A.agentConnectArgs(deskId, this.opts.server, true), [0], c);
+      return `agent session open on desk ${r.desk_id}: screenshot ${r.screenshot.width}x${r.screenshot.height}`;
+    }
     const args = A.agentConnectArgs(deskId, this.opts.server);
     const done = await runCli(this.inv(args, undefined, c.signal));
     if (done.code !== 0) throw this.failure(done, args, undefined);

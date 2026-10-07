@@ -25,7 +25,7 @@ export function cliVersionInfo(cli: readonly string[], run: () => Promise<Comple
 }
 
 /** The options that need a CLI feature, by feature. */
-export const NEEDS = { exec_cwd: 'exec with cwd', run_cwd: 'runJob with cwd' } as const;
+export const NEEDS = { exec_cwd: 'exec with cwd', run_cwd: 'runJob with cwd', shell_cwd: 'shell with cwd' } as const;
 
 /** A UsageError unless `info` lists `feature` (an option the CLI would not understand must not be dropped). */
 export function requireFeature(info: VersionInfo | null, feature: keyof typeof NEEDS): void {

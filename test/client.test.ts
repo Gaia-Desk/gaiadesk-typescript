@@ -176,6 +176,26 @@ both('shell: the script goes on stdin, the result is exec-shaped', async (fake) 
   assert.equal(ops()[0].stdin, 'cd /tmp\nls\n');
 });
 
+test('cwd: shell --cwd on a 0.10.324 CLI (shell and shellStream)', async () => {
+  const { gd, ops } = setup();
+  const r = await gd.shell(OK, 'make\n', { cwd: '/srv/app' });
+  assert.equal(r.stdout, 'ran: script:make\nin: /srv/app\n');
+  assert.deepEqual(ops()[0].argv, ['shell', '--desk-id', OK, '--quiet', '--json', '--cwd', '/srv/app']);
+  const s = gd.shellStream(OK, 'make\n', { cwd: 'proj' });
+  let out = '';
+  for await (const c of s.text()) if (c.stream === 'stdout') out += c.text;
+  assert.equal(out, 'part1 part2 script:make\nin: proj\n');
+  assert.deepEqual(ops()[1].argv, ['shell', '--desk-id', OK, '--quiet', '--cwd', 'proj']);
+});
+
+test('cwd: shell on an older CLI is a UsageError naming shell_cwd, and nothing runs', async () => {
+  const { gd, ops } = setup({}, {}, OLD_CLI);
+  await assert.rejects(gd.shell(OK, 'make', { cwd: '/srv/app' }), (e) => e instanceof UsageError && /shell_cwd/.test(e.message));
+  await assert.rejects(gd.shellStream(OK, 'make', { cwd: '/srv/app' }).wait(), UsageError);
+  await assert.rejects(gd.shell(OK, 'make', { cwd: ' ' }), UsageError);
+  assert.deepEqual(ops(), []);
+});
+
 // ───────────────────────────── cwd ─────────────────────────────
 
 test('cwd: exec --cwd and run --cwd on a 0.10.324 CLI', async () => {
@@ -282,13 +302,27 @@ test('execStream on an older CLI runs plain exec (no --json-stream)', async () =
   assert.deepEqual(ops()[0].argv, ['exec', '--desk-id', OK, '--quiet', '--no-stdin', '--', 'x']);
 });
 
-test('followJobLogs streams', async () => {
-  const { gd } = setup();
+both('followJobLogs streams (logs -f --json on a 0.10.324 CLI, its text before)', async (fake, cli) => {
+  const { gd, ops } = setup({}, {}, fake);
   const s = gd.followJobLogs(OK, 'build');
   let out = '';
   for await (const c of s.text()) if (c.stream === 'stdout') out += c.text;
   assert.equal(out, 'one\ntwo\nthree\n');
-  assert.equal((await s.wait()).stderrTail, 'job build exited (exit 0)');
+  const exit = await s.wait();
+  assert.equal(exit.stderrTail, 'job build exited (exit 0)');
+  assert.equal(exit.error, undefined);
+  const json = cli === '0.10.324' ? ['--json'] : [];
+  assert.deepEqual(ops()[0].argv, ['logs', 'build', '--desk-id', OK, '--follow', ...json]);
+});
+
+test('followJobLogs on a 0.10.324 CLI: a failure is typed on wait()', async () => {
+  const s = setup().gd.followJobLogs(OK, 'lost');
+  let out = '';
+  for await (const c of s.text()) if (c.stream === 'stdout') out += c.text;
+  assert.equal(out, 'one\ntwo\nthree\n');
+  const exit = await s.wait();
+  assert.equal(exit.exitCode, 255);
+  assert.equal(exit.error?.kind, 'connection_lost');
 });
 
 // ───────────────────────────── desk operations ─────────────────────────────
@@ -317,8 +351,8 @@ both('cp: upload / download summaries; failures and refusals are typed', async (
   await assert.rejects(gd.upload('a', PLAIN, 'x/'), (e) => e instanceof GaiaDeskError && /offline/.test(e.message) && e.exitCode === 255);
 });
 
-both('jobs: run, ps ({jobs} or a bare array), logs, kill', async (fake) => {
-  const { gd } = setup({}, {}, fake);
+both('jobs: run, ps ({jobs} or a bare array), logs, kill', async (fake, cli) => {
+  const { gd, ops } = setup({}, {}, fake);
   const j = await gd.runJob(OK, 'build', ['make', '-j8'], { priority: 'low', cpu: 50 });
   assert.equal(j.name, 'build');
   assert.equal(j.state, 'running');
@@ -328,6 +362,8 @@ both('jobs: run, ps ({jobs} or a bare array), logs, kill', async (fake) => {
   assert.equal(await gd.jobLogs(OK, 'build'), 'line1\nline2\n');
   assert.equal(await gd.jobLogs(OK, 'build', { tail: 10 }), 'tail\n');
   await assert.rejects(gd.jobLogs(OK, 'nope'), (e) => e instanceof OperationFailedError && e.message === 'no job named nope');
+  const logs = ops().filter((c) => c.argv[0] === 'logs').map((c) => c.argv.includes('--json'));
+  assert.deepEqual(logs, cli === '0.10.324' ? [true, true, true] : [false, false, false], 'logs --json only where the CLI lists logs_json');
   assert.equal((await gd.killJob(OK, 'build')).state, 'killed');
   await assert.rejects(gd.killJob(OK, 'nope'), (e) => e instanceof OperationFailedError && e.kind === 'failed' && e.message === 'no job named nope');
 });
@@ -355,7 +391,8 @@ both('tokens: owner password via code; create, list ({tokens} or a bare array), 
   assert.match(made.tokens[0].secret ?? '', /^gdagt_/);
   const toFile = await gd.createToken({ desks: OK, out: '/tmp/bot.token' });
   assert.equal(toFile.file, '/tmp/bot.token');
-  assert.equal(toFile.tokens[0].secret, undefined);
+  assert.equal(toFile.tokens[0].desk, OK);
+  assert.ok(!('secret' in toFile.tokens[0]), 'the secret is only in the file');
   assert.equal(calls()[0].env.GAIADESK_CODE, 'owner-pw');
   assert.equal((await gd.listTokens(OK))[0].id, '9f3a1c2b7d004e11');
   assert.deepEqual(await gd.revokeToken(OK, 'bot'), { revoked: 'bot', stopped_sessions: 1 });
@@ -365,15 +402,17 @@ both('tokens: owner password via code; create, list ({tokens} or a bare array), 
   assert.equal((await gd.audit(OK, { token: 'bot' }))[0].action, 'exec.end');
 });
 
-both('mesh and disconnect', async (fake) => {
+both('mesh and disconnect (--json on a 0.10.324 CLI, text before)', async (fake, cli) => {
   const { gd, ops } = setup({}, {}, fake);
   assert.equal((await gd.meshStatus()).peers[0].mesh_ip, '100.64.0.2');
   assert.equal(await gd.meshIp(OK), '100.64.0.2');
-  await assert.rejects(gd.meshIp(OTHER), OperationFailedError);
-  await gd.disconnect(OK);
-  await gd.disconnect();
+  await assert.rejects(gd.meshIp(OTHER), (e) => e instanceof OperationFailedError && /not on this machine's GaiaDesk Mesh/.test(e.message));
+  assert.deepEqual(await gd.disconnect(OTHER), { closed: [OTHER] });
+  assert.deepEqual(await gd.disconnect(), { closed: [OK] });
+  const json = cli === '0.10.324' ? ['--json'] : [];
   const argvs = ops().map((c) => c.argv);
-  assert.deepEqual(argvs.slice(-2), [['disconnect', '--desk-id', OK], ['disconnect', '--all']]);
+  assert.deepEqual(argvs[1], ['mesh', 'ip', OK, ...json]);
+  assert.deepEqual(argvs.slice(-2), [['disconnect', '--desk-id', OTHER, ...json], ['disconnect', '--all', ...json]]);
 });
 
 both('forward: resolves when listening, close() stops it', async (fake) => {
@@ -385,11 +424,18 @@ both('forward: resolves when listening, close() stops it', async (fake) => {
   await assert.rejects(gd.forward(REFUSED, { remotePort: 22 }), (e) => e instanceof RefusedError && /refused the forward/.test(e.message));
 });
 
-test('agentConnect needs an agent token', async () => {
-  const { gd: none } = setup();
+both('agentConnect needs an agent token', async (fake, cli) => {
+  const { gd: none } = setup({}, {}, fake);
   await assert.rejects(none.agentConnect(OK), (e) => e instanceof GaiaDeskError && /agent token is required/.test(e.message));
+  const { gd, ops } = setup({ agentToken: 'gdagt_x' }, {}, fake);
+  assert.equal(await gd.agentConnect(OK), `agent session open on desk ${OK}: screenshot 1280x800`);
+  const json = cli === '0.10.324' ? ['--json'] : [];
+  assert.deepEqual(ops().at(-1)?.argv, ['agent-connect', '--desk-id', OK, ...json]);
+});
+
+test('agentConnect on a 0.10.324 CLI: a refusal is a RefusedError', async () => {
   const { gd } = setup({ agentToken: 'gdagt_x' });
-  assert.match(await gd.agentConnect(OK), /screenshot 1280x800/);
+  await assert.rejects(gd.agentConnect(REFUSED), (e) => e instanceof RefusedError && /screen/.test(e.message));
 });
 
 test('abort: SIGINT reaches gaiadesk-cli', async () => {

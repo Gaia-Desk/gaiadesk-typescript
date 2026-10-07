@@ -408,6 +408,13 @@ export interface MeshStatus {
   self?: MeshSelf | null;
 }
 
+/** `token create --out <file> --json`: the tokens minted, and the file their
+ * secrets were written to (0600, one per line). */
+export interface MintFileResult {
+  file: string;
+  tokens: Array<MintedTokenFiled>;
+}
+
 /** `token create --json` (several desks: one token each). */
 export interface MintResult {
   tokens: Array<MintedToken>;
@@ -429,6 +436,13 @@ export interface MintSpec {
 export interface MintedToken {
   desk: string;
   secret: string;
+  token: TokenInfo;
+}
+
+/** One token written to a file (`token create --out --json`): its desk and
+ * what it allows — never the secret, which is only in the file. */
+export interface MintedTokenFiled {
+  desk: string;
   token: TokenInfo;
 }
 
