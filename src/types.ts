@@ -81,6 +81,15 @@ export type JobLimits = G.JobLimits;
 export type JobList = G.JobList;
 /** `logs --json`: a job and the end of its output. */
 export type JobLogs = G.JobLogs;
+/**
+ * `waitJob()`: the job as it ended (its `exit_code` is a result, not an
+ * error) or, `timed_out`, as it stands, still running. `gaiadesk-cli wait
+ * --json` prints the job; the native library and the SDK give both.
+ */
+export type JobWaitResult = G.JobWaitResult;
+
+/** `whoami --json` (and `devices --json`'s `identity`): `{source: app|login|token|none, account}`. */
+export type Identity = G.Identity;
 
 // ───────────────────────────── stats / measure ─────────────────────────────
 

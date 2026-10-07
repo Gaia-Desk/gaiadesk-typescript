@@ -129,6 +129,26 @@ test('cwd: exec, streams and jobs pass it to the native library', async () => {
   await assert.rejects(gd.exec(OK, 'x', { cwd: '' }), UsageError);
 });
 
+test('waitJob, whoami, env and a job shell reach the native library', async () => {
+  const { gd, calls } = nativeGd();
+  const r = await gd.waitJob(OK, 'build');
+  assert.deepEqual([r.timed_out, r.job.exit_code], [false, 0]);
+  assert.equal((await gd.waitJob(OK, 'slow', { timeout: 30 })).timed_out, true);
+  await assert.rejects(gd.waitJob(OK, 'nope'), OperationFailedError);
+  assert.deepEqual(await gd.whoami(), { source: 'app', account: 'you@example.com' });
+  await gd.exec(OK, 'make', { env: { CI: '1' } });
+  await gd.runJob(OK, 'build', 'make', { shell: 'bash', env: { JOBS: '8' } });
+  const s = gd.execStream(OK, 'make', { env: { CI: '1' } });
+  assert.equal((await s.wait()).exitCode, 0);
+  assert.deepEqual(calls.filter((c) => c.op === 'job_wait').map((c) => c.args).slice(0, 2), [{ desk_id: OK, name: 'build' }, { desk_id: OK, name: 'slow', timeout: '30' }]);
+  const by = (op: string) => calls.filter((c) => c.op === op).pop()!.args;
+  assert.deepEqual(by('whoami'), {});
+  assert.deepEqual(by('exec').env, { CI: '1' });
+  assert.deepEqual(by('job_run'), { desk_id: OK, name: 'build', command: 'make', limits: {}, shell: 'bash', env: { JOBS: '8' } });
+  assert.deepEqual(by('stream:exec').env, { CI: '1' });
+  await assert.rejects(gd.exec(OK, 'x', { env: { 'A B': 'x' } }), UsageError);
+});
+
 test('errors carry the envelope: kind, reason and desk', async () => {
   const { gd } = nativeGd();
   await assert.rejects(gd.exec(OFFLINE, 'x'), (e: unknown) => {

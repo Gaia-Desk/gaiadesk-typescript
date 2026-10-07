@@ -6,7 +6,10 @@
 import { UsageError } from './errors.js';
 import type { Shell } from './types.js';
 
-const SHELLS: readonly Shell[] = ['default', 'none', 'sh', 'cmd', 'pwsh'];
+const SHELLS: readonly Shell[] = ['default', 'none', 'sh', 'bash', 'zsh', 'cmd', 'pwsh'];
+/** The shells `run --shell` takes (a job is a command line: no `none`; no `--shell` is the desk's default). */
+export const JOB_SHELLS = ['sh', 'bash', 'zsh', 'cmd', 'pwsh'] as const;
+export type JobShell = (typeof JOB_SHELLS)[number];
 
 /** A desk id: one token, no whitespace, not a flag. */
 export function checkDesk(deskId: string): string {
@@ -79,6 +82,34 @@ export function checkCwd(cwd: string): string {
 }
 
 /**
+ * `env`: environment variables for the command on the desk, `{NAME: value}`.
+ * A name is non-empty, without `=`, whitespace or NUL; a value a string
+ * without NUL. Errors name the variable, never its value.
+ */
+export function checkEnv(env: Readonly<Record<string, string>>): Record<string, string> {
+  if (typeof env !== 'object' || env === null || Array.isArray(env)) {
+    throw new UsageError('env is an object of variable names to values', { kind: 'usage' });
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (!k || /[=\s\0]/.test(k)) throw new UsageError(`env: ${JSON.stringify(k)} is not an environment variable name`, { kind: 'usage' });
+    if (typeof v !== 'string') throw new UsageError(`env: the value of ${k} must be a string`, { kind: 'usage' });
+    if (v.includes('\0')) throw new UsageError(`env: the value of ${k} contains a NUL byte`, { kind: 'usage' });
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * `--env KEY=VALUE` per variable (exec, run). The values are in
+ * gaiadesk-cli's argv on this machine; the native backend passes them in-process.
+ */
+export function envFlags(env: Readonly<Record<string, string>> | undefined): string[] {
+  if (env === undefined) return [];
+  return Object.entries(checkEnv(env)).flatMap(([k, v]) => ['--env', `${k}=${v}`]);
+}
+
+/**
  * `exec --desk-id <id> [flags] -- <command>`. A string is ONE command line
  * for the desk's shell, verbatim; an array is separate arguments, which the
  * desk quotes for its shell (`--shell none`: run directly). `json`: `true`
@@ -88,7 +119,7 @@ export function checkCwd(cwd: string): string {
 export function execArgs(
   deskId: string,
   command: string | readonly string[],
-  o: RunShapeOptions & { stdin?: boolean; cwd?: string },
+  o: RunShapeOptions & { stdin?: boolean; cwd?: string; env?: Readonly<Record<string, string>> },
   json: boolean | 'stream',
 ): string[] {
   const argv = typeof command === 'string' ? [command] : [...command];
@@ -99,6 +130,7 @@ export function execArgs(
   a.push(o.stdin ? '--stdin' : '--no-stdin');
   a.push(...shapeFlags(o));
   if (o.cwd !== undefined) a.push('--cwd', checkCwd(o.cwd));
+  a.push(...envFlags(o.env));
   a.push('--', ...argv);
   return a;
 }
@@ -151,9 +183,13 @@ export interface JobOptions {
   keepAwake?: boolean;
   /** The directory the job starts in on the desk (`--cwd`). */
   cwd?: string;
+  /** The shell that runs the command (`--shell`; default: `sh -c` on macOS/Linux, `cmd /c` on Windows). */
+  shell?: JobShell;
+  /** Environment variables for the job, `{NAME: value}` (`--env`; never logged by the desk). */
+  env?: Readonly<Record<string, string>>;
 }
 
-/** `run --detach --name <job> --desk-id <id> [caps] [--cwd <dir>] --json -- <command>`. */
+/** `run --detach --name <job> --desk-id <id> [caps] [--cwd <dir>] [--shell <s>] [--env K=V]... --json -- <command>`. */
 export function runArgs(deskId: string, name: string, command: string | readonly string[], o: JobOptions): string[] {
   const argv = typeof command === 'string' ? [command] : [...command];
   if (argv.length === 0 || (argv.length === 1 && !argv[0].trim())) throw new UsageError('run needs a command', { kind: 'usage' });
@@ -170,6 +206,11 @@ export function runArgs(deskId: string, name: string, command: string | readonly
   if (o.keepAwake === true) a.push('--keep-awake');
   if (o.keepAwake === false) a.push('--no-keep-awake');
   if (o.cwd !== undefined) a.push('--cwd', checkCwd(o.cwd));
+  if (o.shell !== undefined) {
+    if (!(JOB_SHELLS as readonly string[]).includes(o.shell)) throw new UsageError(`a job's shell is one of ${JOB_SHELLS.join(', ')}`, { kind: 'usage' });
+    a.push('--shell', o.shell);
+  }
+  a.push(...envFlags(o.env));
   a.push('--json', '--', ...argv);
   return a;
 }
@@ -188,6 +229,16 @@ export function logsArgs(deskId: string, name: string, o: { tail?: number; follo
   }
   return a;
 }
+
+/** `wait <job> --desk-id <id> [--timeout <dur>] --json`. */
+export function waitArgs(deskId: string, name: string, o: { timeout?: number | string }): string[] {
+  const a = ['wait', checkJobName(name), '--desk-id', checkDesk(deskId)];
+  if (o.timeout !== undefined) a.push('--timeout', duration(o.timeout, '--timeout'));
+  a.push('--json');
+  return a;
+}
+
+export const whoamiArgs = () => ['whoami', '--json'];
 
 export const statsArgs = (deskId: string) => ['stats', '--desk-id', checkDesk(deskId), '--json'];
 

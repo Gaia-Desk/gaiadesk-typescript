@@ -154,6 +154,15 @@ export function makeMock() {
         case 'job_run':
           reach(d);
           return { name: args.name, command: args.command, state: 'running', pid: 4242, started_at_ms: 1700000000000, log_bytes: 0, by: 'owner' };
+        case 'job_wait': {
+          reach(d);
+          if (args.name === 'nope') throw nativeError('failed', 'no job named nope', undefined, undefined, d);
+          const running = args.name === 'slow' && args.timeout !== undefined;
+          const job = { name: args.name, command: 'make', state: running ? 'running' : 'exited', started_at_ms: 1, log_bytes: 0, by: 'owner', ...(running ? {} : { exit_code: 0 }) };
+          return { job, timed_out: running };
+        }
+        case 'whoami':
+          return { source: 'app', account: 'you@example.com' };
         case 'job_list': {
           reach(d);
           const jobs = [{ name: 'build', command: 'make', state: 'running', started_at_ms: 1, log_bytes: 0, by: 'owner' }];

@@ -9,7 +9,9 @@
 //                     {"jobs"}/{"tokens"}/{"events"} objects, `exec
 //                     --json-stream`, `--cwd` (exec, run, shell), `--json`
 //                     on logs / mesh ip / disconnect / agent-connect, MCP
-//                     tools named gaiadesk_*.
+//                     tools named gaiadesk_*, `wait` (exits with the job's
+//                     code; 124 at --timeout), `whoami --json`, and
+//                     `--env` / `--shell` (checked in the logged argv).
 //   fake-cli-old.js   a CLI too old to answer `--version --json` (sets
 //                     FAKE_CLI=old, then runs this file): its version as
 //                     text, and `--cwd` is an unknown flag.
@@ -68,6 +70,11 @@ function log(stdin: string) {
     if (v !== undefined) env[k] = v;
   }
   appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv, env, stdin }) + '\n');
+}
+
+/** `whoami --json` and `devices --json`'s `identity`: an account token signs in, else nobody. */
+function identity(): Json {
+  return process.env.GAIADESK_TOKEN ? { source: 'token', account: 'bot@example.com' } : { source: 'none', account: null };
 }
 
 function job(name: string | undefined, extra: Json = {}): Json {
@@ -221,7 +228,7 @@ async function main(): Promise<number> {
       ];
       let list: Json[] = desk ? rows.filter((r) => r.desk_id === desk) : rows;
       if (has('--probe')) list = list.map((r) => ({ ...r, reachable: r.desk_id === OK, probe: r.desk_id === OK ? { ok: true, dialled: true, route: 'LAN', rtt_ms: 4 } : { ok: false, dialled: true, kind: 'no_route' } }));
-      out({ devices: list, sources: ['account', 'mesh'], notes: [] });
+      out({ devices: list, sources: ['account', 'mesh'], notes: [], identity: identity() });
       return list.some((r) => r.reachable === false) ? 1 : 0;
     }
     case 'exec': {
@@ -251,6 +258,27 @@ async function main(): Promise<number> {
       }
       out(job(flag('--name'), { command: afterDashes().join(' ') }));
       return 0;
+    case 'wait': {
+      const name = argv[1];
+      if (desk === REFUSED) return fail('refused', 'this agent token does not have the `jobs` scope', 254, { desk });
+      if (name === 'nope') return fail('failed', 'no job named nope', 1, { desk });
+      if (name === 'slow' && flag('--timeout')) {
+        out(job(name));
+        return 124;
+      }
+      if (name === 'blocked') {
+        out(job(name, { state: 'exited (blocked by Windows Smart App Control / WDAC)', reason: 'blocked_by_os_policy' }));
+        return 1;
+      }
+      const code = name === 'failing' ? 3 : 0;
+      out(job(name, { state: 'exited', exit_code: code }));
+      return code;
+    }
+    case 'whoami': {
+      const who = identity();
+      out(who);
+      return who.account ? 0 : 1;
+    }
     case 'ps': {
       if (desk === PLAIN) {
         out('NAME  STATE');

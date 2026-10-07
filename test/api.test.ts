@@ -200,12 +200,18 @@ test('operations the API does not serve are UsageErrors that say so, and send no
     () => gd.createToken({ desks: OK, name: 'bot', out: '/tmp/bot.token' }),
     () => gd.revokeToken(OK, { all: true }),
     () => gd.revokeToken(OK, 'bot', { account: true }),
+    () => gd.waitJob(OK, 'build'),
+    () => gd.whoami(),
+    () => gd.exec(OK, 'make', { env: { CI: '1' } }),
+    () => gd.runJob(OK, 'build', 'make', { env: { CI: '1' } }),
+    () => gd.runJob(OK, 'build', 'make', { shell: 'bash' }),
   ]) {
     await assert.rejects(call(), notServed);
   }
   assert.throws(() => gd.shellStream(OK), notServed);
   assert.throws(() => gd.mcp(), notServed);
   assert.throws(() => gd.execStream(OK, 'cat', { stdin: true }), notServed);
+  assert.throws(() => gd.execStream(OK, 'make', { env: { CI: '1' } }), notServed);
   assert.equal(own.requests.length, 0);
   await own.close();
 });

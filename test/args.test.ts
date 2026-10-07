@@ -58,6 +58,30 @@ test('run --detach: caps and the command after --', () => {
   assert.throws(() => A.runArgs('1', 'b', 'make', { priority: 'urgent' as 'low' }), UsageError);
 });
 
+test('env: --env KEY=VALUE per variable (exec, run); names checked, values never in errors', () => {
+  assert.deepEqual(A.execArgs('1', 'make', { env: { CI: '1', MSG: 'a b=c' }, shell: 'bash' }, true), [
+    'exec', '--desk-id', '1', '--quiet', '--json', '--no-stdin', '--shell', 'bash', '--env', 'CI=1', '--env', 'MSG=a b=c', '--', 'make',
+  ]);
+  assert.deepEqual(A.execArgs('1', 'x', { env: {} }, true), A.execArgs('1', 'x', {}, true));
+  for (const bad of [{ '': 'x' }, { 'A=B': 'x' }, { 'A B': 'x' }, { A: 1 as unknown as string }, { A: 'sec\0ret' }] as Record<string, string>[]) {
+    assert.throws(() => A.execArgs('1', 'x', { env: bad }, true), (e) => e instanceof UsageError && !/sec/.test(e.message));
+  }
+  assert.ok(A.execArgs('1', 'x', { shell: 'zsh' }, true).includes('zsh'));
+});
+
+test('run --shell / --env; wait; whoami', () => {
+  assert.deepEqual(A.runArgs('1', 'b', 'make', { shell: 'pwsh', env: { CONFIG: 'Release' } }), [
+    'run', '--detach', '--name', 'b', '--desk-id', '1', '--shell', 'pwsh', '--env', 'CONFIG=Release', '--json', '--', 'make',
+  ]);
+  for (const bad of ['none', 'default', 'fish']) assert.throws(() => A.runArgs('1', 'b', 'make', { shell: bad as 'sh' }), UsageError);
+  assert.deepEqual(A.waitArgs('1', 'build', {}), ['wait', 'build', '--desk-id', '1', '--json']);
+  assert.deepEqual(A.waitArgs('1', 'build', { timeout: '10m' }), ['wait', 'build', '--desk-id', '1', '--timeout', '10m', '--json']);
+  assert.deepEqual(A.waitArgs('1', 'build', { timeout: 1.5 }).slice(4, 6), ['--timeout', '2']);
+  assert.throws(() => A.waitArgs('1', '-x', {}), UsageError);
+  assert.throws(() => A.waitArgs('1', 'b', { timeout: -1 }), UsageError);
+  assert.deepEqual(A.whoamiArgs(), ['whoami', '--json']);
+});
+
 test('exec --json-stream and --cwd (gaiadesk-cli 0.10.324+)', () => {
   assert.deepEqual(A.execArgs('123456789', 'make', { cwd: '/srv/app' }, 'stream'), [
     'exec', '--desk-id', '123456789', '--quiet', '--json-stream', '--no-stdin', '--cwd', '/srv/app', '--', 'make',

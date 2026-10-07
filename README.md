@@ -165,7 +165,9 @@ available over the API transport; use the CLI or native transport"):
 `meshStatus`, `meshIp`, `disconnect`, `audit`, `probe` /
 `devices({probe: true})`, recursive copies, `createToken({out})`,
 `revokeToken({all: true})` / `{account: true}`, `execStream` with
-`stdin: true`, and the CLI's own `version`, `versionInfo`, `features`, `raw`.
+`stdin: true`, `env` on `exec` / `execStream` / `runJob`, `shell` on
+`runJob`, `waitJob`, `whoami`, and the CLI's own `version`, `versionInfo`,
+`features`, `raw`.
 
 ## Quickstart
 
@@ -257,15 +259,17 @@ Every result is the CLI's JSON, with the CLI's field names (types in
 | `version()` | `--version` | `"gaiadesk-cli X.Y.Z"` |
 | `versionInfo()` | `--version --json` | `{name, version, features[], mcp_protocol_versions[]}`, or `null` for a CLI too old to answer it (always the CLI, asked once per path) |
 | `features()` | `--version --json` | the set of `features` |
-| `devices({probe?, deskId?})` | `devices --json [--probe] [-d]` | `{devices[], sources[], notes[]}`; with `probe`, unreachable desks have `reachable: false` |
+| `whoami()` | `whoami --json` | `{source, account}`: `source` is `app`, `login`, `token` or `none` (not signed in: a result, not an error) |
+| `devices({probe?, deskId?})` | `devices --json [--probe] [-d]` | `{devices[], sources[], notes[], identity}`; with `probe`, unreachable desks have `reachable: false` |
 | `probe(deskId)` | `devices --probe -d` | one device row with `probe` |
-| `exec(deskId, command, opts)` | `exec --json` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
+| `exec(deskId, command, opts)` | `exec --json [--env K=V]...` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
 | `execStream(deskId, command, opts)` | `exec --json-stream` | a stream of stdout/stderr chunks; `wait()` gives the exit code, the run's `result` and `error` |
 | `shell(deskId, script, opts)` | `shell --json [--cwd]`, script on stdin | as `exec` |
 | `shellStream(deskId, script?, opts)` | `shell [--cwd]` | stream; without a script, stdin stays open for `write()`/`end()` |
 | `upload(local, deskId, remote, {recursive})` | `cp --json <local> <desk>:<remote>` | `{direction, desk, destination, files, dirs, bytes, resumed_bytes, failed[], seconds}` |
 | `download(deskId, remote, local, {recursive})` | `cp --json <desk>:<remote> <local>` | as above |
-| `runJob(deskId, name, command, {priority, cpu, mem, keepAwake, cwd})` | `run --detach --json` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement}` |
+| `runJob(deskId, name, command, {priority, cpu, mem, keepAwake, cwd, shell, env})` | `run --detach --json [--shell] [--env K=V]...` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement, reason}` |
+| `waitJob(deskId, name, {timeout?})` | `wait <job> --json [--timeout]` | `{job, timed_out}`: the job as it ended (its `exit_code` is a result, not an error), or, `timed_out`, as it stands, still running |
 | `jobs(deskId)` | `ps --json` | job[] (from `{"jobs": [...]}`) |
 | `jobLogs(deskId, name, {tail})` | `logs --json` | output text (the `output` of `{job, output}`) |
 | `followJobLogs(deskId, name)` | `logs -f --json` | stream; `wait()`'s `error` says why following failed |
@@ -284,15 +288,21 @@ Every result is the CLI's JSON, with the CLI's field names (types in
 | `mcp({auditDir, allowDomains})` | `mcp` (stdio) | an MCP client: `listTools()`, `callTool(name, args)`, `close()` |
 | `raw(args, {input})` | anything | `{code, stdout, stderr}`: the escape hatch |
 
-`exec`/`shell` options: `shell` (`default` \| `none` \| `sh` \| `cmd` \|
-`pwsh`), `timeout` (seconds or `"10m"`; `0` = none; CLI default 30m),
+`exec`/`shell` options: `shell` (`default` \| `none` \| `sh` \| `bash` \|
+`zsh` \| `cmd` \| `pwsh`; `runJob` takes `sh`, `bash`, `zsh`, `cmd`, `pwsh`), `timeout` (seconds or `"10m"`; `0` = none; CLI default 30m),
 `connectTimeout` (default 60s), `persist`, `verbose`, `stdin` (text or
 bytes; default closed), `check` (throw `CommandError` on a non-zero exit),
 and for `exec` / `execStream` `cwd`: the directory the command starts in on
 the desk (relative: from the desk user's home, or a confined token's folder;
 a CLI without the `exec_cwd` feature is a `UsageError`; a directory that is not
 there is an `OperationFailedError`, one outside a confined token's folder a
-`RefusedError`). `runJob` takes `cwd` too.
+`RefusedError`). `runJob` takes `cwd` too. `env` (`exec`, `execStream`,
+`runJob`): `{NAME: value}`, environment variables for the command, never
+logged by the desk; through gaiadesk-cli they are `--env` arguments of its
+process on this machine, the native library takes them in-process. A
+program Windows Smart App Control / WDAC refused to start is
+`error.reason === 'blocked_by_os_policy'` in an exec result, and a job's
+`reason` (its `state` then says so in words).
 Desk methods also take `signal` (an `AbortSignal`): aborting sends SIGINT, which
 `gaiadesk-cli` turns into stopping the remote command.
 

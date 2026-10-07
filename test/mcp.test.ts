@@ -19,9 +19,9 @@ test('withProtocolMeta adds the two fields; the caller wins', () => {
 });
 
 test('GAIADESK_TOOLS: the gaiadesk_* names of gaiadesk-cli mcp', () => {
-  assert.equal(GAIADESK_TOOLS.length, 21);
+  assert.equal(GAIADESK_TOOLS.length, 22);
   for (const t of GAIADESK_TOOLS) assert.match(t, /^gaiadesk_[a-z_]+$/, t);
-  for (const t of ['gaiadesk_exec', 'gaiadesk_copy_files', 'gaiadesk_job_run', 'gaiadesk_forward_stop', 'gaiadesk_open_session', 'gaiadesk_screenshot', 'gaiadesk_pointer_position']) {
+  for (const t of ['gaiadesk_exec', 'gaiadesk_copy_files', 'gaiadesk_job_run', 'gaiadesk_job_wait', 'gaiadesk_forward_stop', 'gaiadesk_open_session', 'gaiadesk_screenshot', 'gaiadesk_pointer_position']) {
     assert.ok((GAIADESK_TOOLS as readonly string[]).includes(t), t);
   }
 });

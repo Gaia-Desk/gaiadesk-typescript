@@ -139,6 +139,9 @@ export interface Device {
 /** `devices --json`. */
 export interface DeviceList {
   devices: Array<Device>;
+  /** Who this machine is signed in as, and where that came from — the
+   * account whose desks the server listed. */
+  identity: Identity;
   notes: Array<string>;
   /** Which sources answered: `server`, `lan`, `mesh`, `recent`. */
   sources: Array<string>;
@@ -254,6 +257,9 @@ export interface ExecSpec {
   /** The directory it starts in on the desk (relative: from the desk
    * user's home, or a confined token's directory). */
   cwd?: string | null;
+  /** Environment variables for it, on top of the desk's (sent in the
+   * request, never logged). */
+  env?: Record<string, string>;
   shell?: Shell;
   /** Text for its stdin, then end of input. Absent: stdin is closed (the
    * null device), unless `ExecInput` feeds it. */
@@ -292,6 +298,15 @@ export interface ForwardStopped {
   local_ports: Array<number>;
 }
 
+/** `whoami --json`; `devices --json`'s `identity`. */
+export interface Identity {
+  /** The account's email (`null`: not signed in, or the server could not
+   * say). */
+  account?: string | null;
+  /** `app`, `login`, `token` or `none`. */
+  source: string;
+}
+
 /** A background job on a desk. */
 export interface Job {
   /** Who started it: the token's name, or `owner` for a person. */
@@ -310,6 +325,10 @@ export interface Job {
   log_bytes?: number;
   name: string;
   pid?: number | null;
+  /** Why it ended as it did, as a machine reads it, when the desk knows:
+   * `blocked_by_os_policy` — Windows Smart App Control or WDAC refused
+   * to start a program it ran (its `state` then says so in words). */
+  reason?: string | null;
   started_at_ms: number;
   /** `running`, `exited`, `killed`, or `lost` (it was running when the
    * GaiaDesk host restarted and its end could not be observed). */
@@ -364,10 +383,23 @@ export interface JobSpec {
    * `cmd /c`); several are words, each quoted for THAT desk's shell. */
   command: Array<string>;
   cwd?: string | null;
+  /** Environment variables for it (never logged). */
+  env?: Record<string, string>;
   limits?: JobLimits;
   /** Letters, digits, `.`, `_`, `-`: how `jobs`, `job_logs` and `kill_job`
    * find it. */
   name: string;
+  /** The shell that runs it (absent: the desk's job shell — `sh -c`,
+   * `cmd /c`). `none` is not one: a job is a command line. */
+  shell?: Shell | null;
+}
+
+/** How a wait for a job ended (`Desk::wait_job`): the job as it
+ * ended — or, `timed_out`, as it stands, still running. (`gaiadesk-cli
+ * wait --json` prints `job`.) */
+export interface JobWaitResult {
+  job: Job;
+  timed_out: boolean;
 }
 
 /** `measure --json`. */
@@ -519,7 +551,7 @@ export interface ScreenSize {
 }
 
 /** Which shell runs a command on the desk. */
-export type Shell = "default" | "none" | "sh" | "cmd" | "pwsh";
+export type Shell = "default" | "none" | "sh" | "bash" | "zsh" | "cmd" | "pwsh";
 
 /** `stats --json`: the desk's own figures. */
 export interface StatsReport {

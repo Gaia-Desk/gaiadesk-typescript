@@ -41,6 +41,7 @@ export const GAIADESK_TOOLS = [
   'gaiadesk_job_run',
   'gaiadesk_job_list',
   'gaiadesk_job_logs',
+  'gaiadesk_job_wait',
   'gaiadesk_job_kill',
   'gaiadesk_forward_start',
   'gaiadesk_forward_stop',

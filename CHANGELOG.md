@@ -2,6 +2,22 @@
 
 ## Unreleased: gaiadesk-cli 0.10.324
 
+- `waitJob(deskId, name, {timeout?})` (`wait <job> --json`, the native
+  `job_wait`): blocks until the job ends; `{job, timed_out}`. The job's own
+  non-zero exit code is a result, not an error.
+- `env` (`{NAME: value}`) on `exec`, `execStream` and `runJob` (`--env
+  KEY=VALUE`; the native library's `env`); `shell` on `runJob` (`sh`, `bash`,
+  `zsh`, `cmd`, `pwsh`); `bash` and `zsh` for `exec` / `shell`.
+- `whoami()` (`whoami --json`, the native `whoami`): `{source, account}`;
+  not signed in (`source: 'none'`) is a result, not an error. `devices()`
+  has `identity`.
+- `GAIADESK_TOOLS` lists `gaiadesk_job_wait`.
+- Regenerated types: `Identity`, `JobWaitResult`, `Job.reason`
+  (`blocked_by_os_policy`: Windows Smart App Control / WDAC), `env` and
+  `shell` in the run shapes, `bash`/`zsh` in `Shell`.
+- On the API transport, `waitJob`, `whoami`, `env` and a job `shell` are a
+  `UsageError` (the API does not take them), never silently dropped.
+
 - **API transport.** `new GaiaDesk({ apiKey, deskToken?, baseUrl? })` drives
   desks through GaiaDesk's hosted API (`https://api.gaiadesk.net/v1`) with
   the global `fetch` only: no gaiadesk-cli, no native binary. Same method

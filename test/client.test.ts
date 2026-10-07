@@ -343,6 +343,42 @@ test('jobs: run, ps, logs, kill', async () => {
   await assert.rejects(gd.killJob(OK, 'nope'), (e) => e instanceof OperationFailedError && e.kind === 'failed' && e.message === 'no job named nope');
 });
 
+test('env and a job shell: --env / --shell in argv', async () => {
+  const { gd, ops } = setup();
+  await gd.exec(OK, 'make', { env: { CI: '1' } });
+  assert.deepEqual(ops()[0].argv, ['exec', '--desk-id', OK, '--quiet', '--json', '--no-stdin', '--env', 'CI=1', '--', 'make']);
+  assert.equal((await gd.runJob(OK, 'build', 'make', { shell: 'bash', env: { JOBS: '8' } })).state, 'running');
+  assert.deepEqual(ops()[1].argv.slice(6, 10), ['--shell', 'bash', '--env', 'JOBS=8']);
+  const s = gd.execStream(OK, 'make', { env: { CI: '1' } });
+  assert.equal((await s.wait()).exitCode, 0);
+  assert.ok(ops()[2].argv.includes('CI=1'));
+  await assert.rejects(gd.runJob(OK, 'build', 'make', { shell: 'none' as 'sh' }), UsageError);
+});
+
+test('waitJob: the job as it ended; its exit code is a result; timeout and failures', async () => {
+  const { gd, ops } = setup();
+  let r = await gd.waitJob(OK, 'build');
+  assert.deepEqual([r.timed_out, r.job.state, r.job.exit_code], [false, 'exited', 0]);
+  assert.deepEqual(ops()[0].argv, ['wait', 'build', '--desk-id', OK, '--json']);
+  r = await gd.waitJob(OK, 'failing');
+  assert.deepEqual([r.timed_out, r.job.exit_code], [false, 3], "the job's own failure is a result");
+  r = await gd.waitJob(OK, 'slow', { timeout: 5 });
+  assert.deepEqual([r.timed_out, r.job.state], [true, 'running']);
+  assert.deepEqual(ops()[2].argv.slice(4, 6), ['--timeout', '5']);
+  r = await gd.waitJob(OK, 'blocked');
+  assert.deepEqual([r.timed_out, r.job.reason], [false, 'blocked_by_os_policy']);
+  await assert.rejects(gd.waitJob(OK, 'nope'), (e) => e instanceof OperationFailedError && e.message === 'no job named nope');
+  await assert.rejects(gd.waitJob(REFUSED, 'build'), RefusedError);
+});
+
+test('whoami: who the CLI is signed in as; nobody is a result, not an error', async () => {
+  assert.deepEqual(await setup().gd.whoami(), { source: 'none', account: null });
+  const { gd, ops } = setup({ accountToken: 'acct' });
+  assert.deepEqual(await gd.whoami(), { source: 'token', account: 'bot@example.com' });
+  assert.deepEqual(ops()[0].argv, ['whoami', '--json']);
+  assert.equal((await gd.devices()).identity.source, 'token');
+});
+
 test('stats and measure', async () => {
   const { gd } = setup();
   const s = await gd.stats(OK);

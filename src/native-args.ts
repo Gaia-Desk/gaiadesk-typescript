@@ -20,10 +20,11 @@ function shape(o: A.RunShapeOptions): Args {
 
 const command = (c: string | readonly string[]) => (typeof c === 'string' ? c : [...c]);
 
-export function exec(deskId: string, cmd: string | readonly string[], o: A.RunShapeOptions & { cwd?: string }): Args {
+export function exec(deskId: string, cmd: string | readonly string[], o: A.RunShapeOptions & { cwd?: string; env?: Readonly<Record<string, string>> }): Args {
   A.execArgs(deskId, cmd, o, true);
   const a: Args = { desk_id: A.checkDesk(deskId), command: command(cmd), ...shape(o) };
   if (o.cwd !== undefined) a.cwd = o.cwd;
+  if (o.env !== undefined) a.env = A.checkEnv(o.env);
   return a;
 }
 
@@ -71,6 +72,16 @@ export function runJob(deskId: string, name: string, cmd: string | readonly stri
   if (o.keepAwake !== undefined) limits.keep_awake = o.keepAwake;
   const a: Args = { desk_id: A.checkDesk(deskId), name, command: command(cmd), limits };
   if (o.cwd !== undefined) a.cwd = o.cwd;
+  if (o.shell !== undefined) a.shell = o.shell;
+  if (o.env !== undefined) a.env = A.checkEnv(o.env);
+  return a;
+}
+
+/** `job_wait`: `timeout` as a duration string (`"30"` is seconds). */
+export function waitJob(deskId: string, name: string, timeout?: number | string): Args {
+  A.waitArgs(deskId, name, { timeout });
+  const a: Args = { desk_id: A.checkDesk(deskId), name };
+  if (timeout !== undefined) a.timeout = A.duration(timeout, '--timeout');
   return a;
 }
 

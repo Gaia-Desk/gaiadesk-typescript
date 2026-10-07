@@ -41,8 +41,10 @@ import type {
   Disconnected,
   ExecResult,
   ForwardListening,
+  Identity,
   JobInfo,
   JobLogs,
+  JobWaitResult,
   MeasureResult,
   MeshIp,
   MeshStatus,
@@ -124,6 +126,13 @@ export interface ExecOptions extends A.RunShapeOptions, CallOptions {
    * `exec_cwd` feature is a UsageError saying to update it, never ignored.
    */
   cwd?: string;
+  /**
+   * Environment variables for the command, `{NAME: value}` (`--env`; never
+   * logged by the desk). Through gaiadesk-cli they are `--env` arguments of
+   * its process on this machine; the native library takes them in-process.
+   * Not on the API transport (a UsageError, never dropped).
+   */
+  env?: Readonly<Record<string, string>>;
   /** Throw CommandError when the command exits non-zero (or times out). Default false. */
   check?: boolean;
 }
@@ -133,6 +142,8 @@ export interface StreamExecOptions extends A.RunShapeOptions, CallOptions {
   stdin?: string | Uint8Array | true;
   /** The directory the command starts in on the desk (as ExecOptions.cwd). */
   cwd?: string;
+  /** Environment variables for the command (as ExecOptions.env). */
+  env?: Readonly<Record<string, string>>;
 }
 
 /** A running `gaiadesk-cli forward`. */
@@ -323,6 +334,18 @@ export class GaiaDesk {
     return this.op<DevicesResult>(A.devicesArgs(o), [0, 1], o);
   }
 
+  /**
+   * `whoami --json`: who this machine is signed in as, `{source, account}`
+   * (`source`: `app`, `login`, `token` or `none`). Not signed in is a result
+   * (the CLI exits 1 then), not an error.
+   */
+  async whoami(c: CallOptions = {}): Promise<Identity> {
+    this.cliOnly('whoami()');
+    const n = this.nat();
+    if (n) return n.call<Identity>('whoami', {}, c);
+    return this.op<Identity>(A.whoamiArgs(), [0, 1], c);
+  }
+
   /** `devices --probe -d <id>`: is this desk reachable right now? */
   async probe(deskId: string, c: CallOptions = {}): Promise<DevicesResult['devices'][number]> {
     const r = await this.devices({ probe: true, deskId, signal: c.signal });
@@ -358,10 +381,15 @@ export class GaiaDesk {
    * `exec --json`: run ONE command and return its exit code, stdout and
    * stderr. `command` as a string is one command line for the desk's shell;
    * as an array, separate arguments. A non-zero exit is a result, not an
-   * error, unless `check: true`. Throws when the command never ran.
+   * error, unless `check: true`. Throws when the command never ran. A
+   * program Windows Smart App Control / WDAC refused to start has
+   * `error.reason === 'blocked_by_os_policy'`.
    */
   async exec(deskId: string, command: string | readonly string[], o: ExecOptions = {}): Promise<ExecResult> {
-    if (this.apiT) return this.apiT.exec(deskId, command, o);
+    if (this.apiT) {
+      if (o.env !== undefined) throw notOverApi('exec with env');
+      return this.apiT.exec(deskId, command, o);
+    }
     const n = this.nat();
     if (n) return n.exec('exec', N.exec(deskId, command, o), { input: o.stdin, signal: o.signal, check: o.check });
     const args = A.execArgs(deskId, command, { ...o, stdin: o.stdin !== undefined }, true);
@@ -378,7 +406,10 @@ export class GaiaDesk {
    * thrown by iteration and wait().
    */
   execStream(deskId: string, command: string | readonly string[], o: StreamExecOptions = {}): OutputStream {
-    if (this.apiT) return this.apiT.execStream(deskId, command, o);
+    if (this.apiT) {
+      if (o.env !== undefined) throw notOverApi('execStream with env');
+      return this.apiT.execStream(deskId, command, o);
+    }
     const n = this.nat();
     if (n) return n.stream('exec', N.exec(deskId, command, o), { stdin: o.stdin, signal: o.signal });
     const args = A.execArgs(deskId, command, { ...o, stdin: o.stdin !== undefined }, 'stream');
@@ -455,15 +486,45 @@ export class GaiaDesk {
   /**
    * `run --detach --json`: start a named background job that outlives this
    * connection. `cwd` (the directory it starts in) needs the `run_cwd`
-   * feature (or the native library).
+   * feature (or the native library). `shell` (`sh`, `bash`, `zsh`, `cmd`,
+   * `pwsh`) runs the command; `env` gives it variables (`--env`). A job a
+   * program in it was refused by Windows Smart App Control / WDAC ends with
+   * `reason: 'blocked_by_os_policy'`.
    */
   async runJob(deskId: string, name: string, command: string | readonly string[], o: A.JobOptions & CallOptions = {}): Promise<JobInfo> {
-    if (this.apiT) return this.apiT.runJob(deskId, name, command, o);
+    if (this.apiT) {
+      if (o.env !== undefined || o.shell !== undefined) throw notOverApi(`runJob with ${o.env !== undefined ? 'env' : 'shell'}`);
+      return this.apiT.runJob(deskId, name, command, o);
+    }
     const n = this.nat();
     if (n) return n.call<JobInfo>('job_run', N.runJob(deskId, name, command, o), o);
     const args = A.runArgs(deskId, name, command, o);
     if (o.cwd !== undefined) await this.require('run_cwd');
     return this.op<JobInfo>(args, [0], o);
+  }
+
+  /**
+   * `wait <job> --json`: block until the job ends, `{job, timed_out}`. The
+   * job's own exit code is in `job.exit_code` (a result, not an error).
+   * `timeout` (seconds or `"10m"`): give up then, with `timed_out: true` and
+   * the job still running. No such job is an OperationFailedError.
+   */
+  async waitJob(deskId: string, name: string, o: { timeout?: number | string } & CallOptions = {}): Promise<JobWaitResult> {
+    this.cliOnly('waitJob()', 'poll jobs() instead, or use the CLI or native transport');
+    const n = this.nat();
+    if (n) return n.call<JobWaitResult>('job_wait', N.waitJob(deskId, name, o.timeout), o);
+    const args = A.waitArgs(deskId, name, o);
+    // The CLI exits with the JOB's code (124: --timeout ran out), so any exit with a job is a result.
+    const done = await runCli(this.inv(args, undefined, o.signal));
+    const json = parseJson(done.stdout);
+    if (isObj(json) && errorEnvelope(json) === null && typeof json.name === 'string') {
+      const job = json as unknown as JobInfo;
+      return { job, timed_out: done.code === 124 && job.state === 'running' };
+    }
+    if (done.code === 0 && json === undefined) {
+      throw new ProtocolError('gaiadesk-cli printed no job', { exitCode: 0, stderr: done.stderr, argv: args, kind: 'protocol' });
+    }
+    throw this.failure(done, args, json);
   }
 
   /** `ps --json`: the `jobs` of `{"jobs": [...]}`. */
