@@ -5,6 +5,8 @@ export { GaiaDesk } from './client.js';
 export type { GaiaDeskOptions, CallOptions, ExecOptions, StreamExecOptions, Forward } from './client.js';
 export { DEFAULT_API_URL, API_FILE_LIMIT } from './api.js';
 export type { ApiCallOptions, FetchLike, ResponseLike, HttpTransportName } from './api.js';
+export { DEFAULT_RESPONSE_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS } from './api-timeouts.js';
+export type { TimeoutOptions } from './api-timeouts.js';
 export { LOCAL_API_UNAVAILABLE, localApiDir, localPipeName, localSocketPath, localTokenPath, pipeUser } from './local.js';
 export { FingerprintMismatchError, normalizeFingerprint } from './lan.js';
 export { CliStream } from './proc.js';

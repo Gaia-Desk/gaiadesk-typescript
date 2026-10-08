@@ -10,6 +10,7 @@
 //           else ~/.gaiadesk/api-token) as `Authorization: Bearer`.
 
 import { ApiTransport } from './api.js';
+import type { TimeoutOptions } from './api-timeouts.js';
 import { GaiaDeskError, UnreachableError, UsageError } from './errors.js';
 import { nodeFetch } from './node-http.js';
 
@@ -65,6 +66,8 @@ export interface LocalOptions {
   deskToken?: string;
   /** The environment the defaults are read from (default: this process's). */
   env?: Env;
+  /** Network timeouts (as the API transport's). */
+  timeouts?: TimeoutOptions;
 }
 
 function nonEmpty(v: string | undefined, what: string): string | undefined {
@@ -150,6 +153,7 @@ export function localTransport(o: LocalOptions = {}): ApiTransport {
     baseUrl: 'http://localhost/v1',
     where: 'the desk\'s local API',
     fetch,
+    timeouts: o.timeouts,
     async credentials(callToken): Promise<Record<string, string>> {
       const t = callToken ?? deskToken;
       if (t) return { 'X-GaiaDesk-Desk-Token': t };

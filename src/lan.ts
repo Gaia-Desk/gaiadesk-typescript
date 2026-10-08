@@ -8,6 +8,7 @@
 // X-GaiaDesk-Desk-Token.
 
 import { ApiTransport } from './api.js';
+import type { TimeoutOptions } from './api-timeouts.js';
 import { UnreachableError, UsageError } from './errors.js';
 import type { ErrorDetails } from './errors.js';
 import { nodeFetch } from './node-http.js';
@@ -45,6 +46,8 @@ export interface LanOptions {
   fingerprint: string;
   /** The agent token (`gdagt_…`); required here or on each call. */
   deskToken?: string;
+  /** Network timeouts (as the API transport's). */
+  timeouts?: TimeoutOptions;
 }
 
 /** The `lan` transport: an ApiTransport over pinned TLS to a desk's LAN gateway. */
@@ -106,6 +109,7 @@ export function lanTransport(o: LanOptions): ApiTransport {
     baseUrl,
     where: `the desk's LAN gateway (${origin})`,
     fetch,
+    timeouts: o.timeouts,
     credentials(callToken) {
       const t = callToken ?? deskToken;
       if (!t) {

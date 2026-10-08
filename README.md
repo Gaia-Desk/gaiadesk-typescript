@@ -177,6 +177,34 @@ available over the API transport; use the CLI or native transport"):
 `stdin: true`, `whoami`, and the CLI's own `version`, `versionInfo`,
 `features`, `raw`.
 
+**Timeouts** (`timeouts: { responseTimeoutMs, idleTimeoutMs }`, in
+milliseconds, on the api, local and lan transports) make a server or proxy
+that stops answering an error, never a hang:
+
+```ts
+const gd = new GaiaDesk({ apiKey, timeouts: { responseTimeoutMs: 60_000, idleTimeoutMs: 30_000 } });
+```
+
+- `responseTimeoutMs` (default 16 minutes, above the API's 15-minute call
+  limit: a buffered `exec` answers when its command ends): the longest wait
+  for an answer to begin, sending the request included. Exceeded: an
+  `UnreachableError`, kind `timeout`.
+- `idleTimeoutMs` (default 90 s; streams and held waits send a keep-alive
+  every 15 s): the longest silence while reading a body (JSON, a download,
+  an event stream). It is not a deadline: a large download that keeps
+  flowing never times out. Exceeded mid-answer: a `ConnectionLostError`,
+  kind `timeout` (a stream ends with `error.kind` `connection_lost`, reason
+  `timeout`, exit 255).
+- `null` (or `Infinity`): no limit. Zero, negative or non-numbers are a
+  `UsageError`. A timeout abandons the connection; it is not retried, and
+  your `signal` still ends a call at any point (kind `interrupted`).
+- A connection closed or reset before any answer is an `UnreachableError`
+  (kind `network`) at once. The SDK does not retry requests, and Node's
+  `fetch` (undici) does not silently re-send one either, with or without a
+  body, even on a pooled connection closed before any answer (the local and
+  lan transports open one connection per request): `exec`, uploads, jobs,
+  tokens and wakes reach the desk at most once.
+
 ## End-to-end encryption
 
 On the API transport, desk operations are **sealed** so GaiaDesk's servers

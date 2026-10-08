@@ -12,6 +12,8 @@ import * as A from './args.js';
 import { CommandError, GaiaDeskError, OperationFailedError, ProtocolError, UnreachableError, UsageError, errorEnvelope, envelopeDetails, errorForKind, sdkKind } from './errors.js';
 import { ApiStream, deskOpExit } from './api-stream.js';
 import type { ByteStreamLike, SseEvent } from './api-stream.js';
+import { boundedFetch, guardBody, resolveTimeouts } from './api-timeouts.js';
+import type { TimeoutOptions, Timeouts } from './api-timeouts.js';
 import { E2eLayer, openAnswer, openDownload, openErrorEnvelope, sealUpload, unsealSse } from './api-e2e.js';
 import type { E2eOptions, Sealed } from './api-e2e.js';
 import { E2E_FRAMES_CONTENT_TYPE, E2E_HEADER, requestHeader } from './e2e.js';
@@ -49,6 +51,8 @@ export interface ApiOptions extends E2eOptions {
   deskToken?: string;
   baseUrl?: string;
   fetch?: FetchLike;
+  /** Network timeouts (default: an answer begins within 16 minutes, and no 90 s pass without a byte of it). */
+  timeouts?: TimeoutOptions;
 }
 
 /** The transports that speak GaiaDesk's /v1 HTTP API: hosted, on the desk itself, or a desk's LAN gateway. */
@@ -68,6 +72,8 @@ export interface HttpConfig {
   credentials(deskToken: string | undefined): Record<string, string> | Promise<Record<string, string>>;
   /** What could not be reached, for the error: `the GaiaDesk API (https://…)`. */
   where: string;
+  /** Network timeouts (as ApiOptions.timeouts). */
+  timeouts?: TimeoutOptions;
 }
 
 /** Per call: the abort signal, a desk token for this call only, and how long to wait for a sleeping desk. */
@@ -138,6 +144,7 @@ export class ApiTransport {
   private readonly where: string;
   private readonly credentials: HttpConfig['credentials'];
   private readonly fetcher: FetchLike;
+  private readonly timeouts: Timeouts;
   /** End-to-end encryption of desk operations: the hosted API only. */
   private readonly e2e: E2eLayer | null = null;
 
@@ -149,12 +156,14 @@ export class ApiTransport {
       this.where = o.where;
       this.credentials = o.credentials;
       this.fetcher = o.fetch;
+      this.timeouts = resolveTimeouts(o.timeouts);
       return;
     }
     if (typeof o.apiKey !== 'string' || !o.apiKey.trim()) throw new UsageError('apiKey must be a non-empty string', { kind: 'usage' });
     if (o.deskToken !== undefined && (typeof o.deskToken !== 'string' || !o.deskToken.trim())) {
       throw new UsageError('deskToken must be a non-empty string (a scoped agent token, gdagt_…)', { kind: 'usage' });
     }
+    this.timeouts = resolveTimeouts(o.timeouts);
     const key = o.apiKey.trim();
     const deskToken = o.deskToken?.trim();
     this.transport = 'api';
@@ -231,19 +240,29 @@ export class ApiTransport {
       headers['Content-Type'] = 'application/octet-stream';
       body = r.bytes;
     }
+    // One controller per request: the caller's signal, the stream's own (kill()), and the
+    // timeouts (api-timeouts.ts) all abort it, which abandons the connection.
     const ctrl = new AbortController();
     const outer = r.signal;
-    const onAbort = () => ctrl.abort();
-    if (outer?.aborted) ctrl.abort();
-    else outer?.addEventListener('abort', onAbort, { once: true });
     const inner = signal;
-    if (inner?.aborted) ctrl.abort();
-    else inner?.addEventListener('abort', onAbort, { once: true });
+    const onAbort = () => ctrl.abort();
+    const done = () => {
+      outer?.removeEventListener('abort', onAbort);
+      inner?.removeEventListener('abort', onAbort);
+    };
+    if (outer?.aborted || inner?.aborted) ctrl.abort();
+    outer?.addEventListener('abort', onAbort, { once: true });
+    inner?.addEventListener('abort', onAbort, { once: true });
+    const interrupted = () => new GaiaDeskError(`${op}: interrupted`, { kind: 'interrupted', exitCode: 130, argv: [op] });
+    const guard = { ctrl, where: this.where, op, timeouts: this.timeouts, interrupted, done };
+    const state = { failed: null as GaiaDeskError | null };
     let res: ResponseLike;
     try {
-      res = await this.fetcher(this.url(path, query), { method, headers, body, signal: ctrl.signal });
+      res = await boundedFetch(Promise.resolve().then(() => this.fetcher(this.url(path, query), { method, headers, body, signal: ctrl.signal })), guard, state);
     } catch (e) {
-      if (ctrl.signal.aborted) throw new GaiaDeskError(`${op}: interrupted`, { kind: 'interrupted', exitCode: 130, argv: [op] });
+      done();
+      if (state.failed) throw state.failed;
+      if (ctrl.signal.aborted) throw interrupted();
       if (e instanceof GaiaDeskError) {
         // The transport's own typed error (local: no socket; lan: the fingerprint did not match).
         if (e.argv.length === 0) Object.defineProperty(e, 'argv', { value: [op] });
@@ -255,9 +274,9 @@ export class ApiTransport {
         exitCode: 255,
         argv: [op],
       });
-    } finally {
-      outer?.removeEventListener('abort', onAbort);
     }
+    // Every read of the body is bounded by the idle timeout; the caller's abort still ends it.
+    res = guardBody(res, guard, state);
     if (!res.ok) throw await apiError(res, op, sealed ? (json) => openErrorEnvelope(json, sealed.seal, [op]) : undefined);
     if (sealed) sealOf.set(res, sealed.seal);
     return res;

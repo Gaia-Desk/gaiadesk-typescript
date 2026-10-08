@@ -1,6 +1,38 @@
 # Changelog
 
-## Unreleased: end-to-end encrypted desk operations
+## 0.1.1
+
+### never hang on a dropped or stalled connection
+
+- api, local and lan transports: option `timeouts: { responseTimeoutMs,
+  idleTimeoutMs }` (milliseconds; `null` or `Infinity`: no limit; zero,
+  negative or non-numbers are a `UsageError`). `responseTimeoutMs` (default
+  16 minutes, above the API's 15-minute call limit) bounds the wait for an
+  answer to begin, sending the request included: exceeded, an
+  `UnreachableError` with kind and reason `timeout`. `idleTimeoutMs`
+  (default 90 s; streams and held waits keep alive every 15 s) bounds every
+  read of a body (JSON, error bodies, downloads plain and sealed, event
+  streams, held waits): exceeded, a `ConnectionLostError` with kind
+  `timeout`, and a stream ends with `error.kind` `connection_lost`, reason
+  `timeout`, exit 255. Before, a server or proxy that went silent hung the
+  call until undici's own 300-second limits (api) or forever (local, lan).
+- Either timeout aborts the request, so its connection is abandoned, never
+  reused; neither is retried. A connection closed or reset before any answer
+  is an `UnreachableError` (kind `network`) at once; nothing is re-sent (the
+  SDK has no retry policy, and fetch does not re-send on its own). A body cut
+  off mid-way is a `ConnectionLostError` (kind `network`); the caller's
+  `signal` still ends a call mid-body (kind `interrupted`).
+- A stream ended by a transport error reports its kind by the error's class
+  (`unreachable`, `connection_lost`, `refused`, `failed`, `usage`,
+  `protocol`).
+- Proven on a raw-socket test server (`node:net`): closed or reset before
+  any response byte (with and without reading a 4 MiB upload), stalled
+  mid-body, mid-JSON, mid-stream, silent, a slow body that keeps flowing,
+  and a 300-request stress run; over fetch and over the local transport's
+  Unix socket. New exports `TimeoutOptions`, `DEFAULT_RESPONSE_TIMEOUT_MS`,
+  `DEFAULT_IDLE_TIMEOUT_MS`.
+
+### end-to-end encrypted desk operations
 
 - API transport: desk operations (exec, execStream, jobs, logs, waitJob,
   killJob, stats, upload/download, tokens) are sealed end to end to the
@@ -20,7 +52,7 @@
   installed (the tests that need it absent no longer depend on what npm
   installed).
 
-## Unreleased: local and lan transports
+### local and lan transports
 
 - `new GaiaDesk({ transport: 'local' })`: code running on a desk drives it
   (and what it reaches) through the GaiaDesk app's own `/v1` API over its
@@ -42,7 +74,7 @@
   `localPipeName`, `pipeUser`, `localSocketPath`, `localTokenPath`,
   `localApiDir`, `LOCAL_API_UNAVAILABLE`, `HttpTransportName`.
 
-## Unreleased: the API transport's env, shell and waitJob
+### the API transport's env, shell and waitJob
 
 - API transport: `env` on `exec`, `execStream` and `runJob`, `shell` on
   `runJob`, and `waitJob` (`GET /desks/{id}/jobs/{name}/wait`; a `timeout`
@@ -51,7 +83,7 @@
 - `powershell` is a shell name everywhere `pwsh` is, sent as `pwsh` (as
   gaiadesk-cli maps it). Regenerated types: `Shell` has `powershell`.
 
-## Unreleased: gaiadesk-cli 0.10.324
+### gaiadesk-cli 0.10.324
 
 - `waitJob(deskId, name, {timeout?})` (`wait <job> --json`, the native
   `job_wait`): blocks until the job ends; `{job, timed_out}`. The job's own

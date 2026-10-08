@@ -10,6 +10,7 @@
 
 import * as A from './args.js';
 import { ApiTransport } from './api.js';
+import type { TimeoutOptions } from './api-timeouts.js';
 import { lanTransport } from './lan.js';
 import { localTransport } from './local.js';
 import type { ApiCallOptions, FetchLike } from './api.js';
@@ -131,6 +132,15 @@ export interface GaiaDeskOptions {
   /** Where the SDK's warnings go (default: `console.warn`). */
   onWarning?: (message: string) => void;
   /**
+   * API, local and lan transports: how long to wait on the network, in
+   * milliseconds (`null`: no limit). `responseTimeoutMs` (default 16
+   * minutes) bounds the wait for an answer to begin, `idleTimeoutMs`
+   * (default 90 s) every read of its body; a peer that drops or stalls the
+   * connection is then an `UnreachableError` / `ConnectionLostError` with
+   * kind `timeout`, never a hang.
+   */
+  timeouts?: TimeoutOptions;
+  /**
    * How operations reach desks. Default: `api` given an `apiKey`, else
    * `direct` (the native library or gaiadesk-cli, see `backend`).
    * - `local`: code running on the desk, through the GaiaDesk app's own /v1
@@ -239,7 +249,7 @@ export class GaiaDesk {
     const usage = (m: string) => new UsageError(m, { kind: 'usage' });
     const given = (keys: (keyof GaiaDeskOptions)[]) => keys.filter((k) => o[k] !== undefined);
     const only = (allowed: (keyof GaiaDeskOptions)[], what: string) => {
-      const extra = given((['apiKey', 'deskToken', 'baseUrl', 'fetch', 'socketPath', 'token', 'fingerprint', 'e2e', 'e2eKeys'] as const).filter((k) => !allowed.includes(k)));
+      const extra = given((['apiKey', 'deskToken', 'baseUrl', 'fetch', 'socketPath', 'token', 'fingerprint', 'e2e', 'e2eKeys', 'timeouts'] as const).filter((k) => !allowed.includes(k)));
       if (extra.length) throw usage(`${extra.join(', ')} ${extra.length === 1 ? 'is' : 'are'} not for ${what}`);
     };
     if (t !== 'direct') {
@@ -259,16 +269,16 @@ export class GaiaDesk {
     }
     if (t === 'api') {
       if (o.apiKey === undefined) throw usage('the api transport needs an apiKey');
-      only(['apiKey', 'deskToken', 'baseUrl', 'fetch', 'e2e', 'e2eKeys'], 'the api transport');
-      return new ApiTransport({ apiKey: o.apiKey, deskToken: o.deskToken, baseUrl: o.baseUrl, fetch: o.fetch, e2e: o.e2e, e2eKeys: o.e2eKeys, onWarning: o.onWarning });
+      only(['apiKey', 'deskToken', 'baseUrl', 'fetch', 'e2e', 'e2eKeys', 'timeouts'], 'the api transport');
+      return new ApiTransport({ apiKey: o.apiKey, deskToken: o.deskToken, baseUrl: o.baseUrl, fetch: o.fetch, e2e: o.e2e, e2eKeys: o.e2eKeys, onWarning: o.onWarning, timeouts: o.timeouts });
     }
     if (t === 'local') {
-      only(['deskToken', 'socketPath', 'token'], 'the local transport');
-      return localTransport({ socketPath: o.socketPath, token: o.token, deskToken: o.deskToken, env: o.env });
+      only(['deskToken', 'socketPath', 'token', 'timeouts'], 'the local transport');
+      return localTransport({ socketPath: o.socketPath, token: o.token, deskToken: o.deskToken, env: o.env, timeouts: o.timeouts });
     }
-    only(['deskToken', 'baseUrl', 'fingerprint'], 'the lan transport');
+    only(['deskToken', 'baseUrl', 'fingerprint', 'timeouts'], 'the lan transport');
     if (o.baseUrl === undefined) throw usage('the lan transport needs baseUrl: the desk\'s gateway, https://<desk>:7443/v1');
-    return lanTransport({ baseUrl: o.baseUrl, fingerprint: o.fingerprint as string, deskToken: o.deskToken });
+    return lanTransport({ baseUrl: o.baseUrl, fingerprint: o.fingerprint as string, deskToken: o.deskToken, timeouts: o.timeouts });
   }
 
   /** On the API transport, the UsageError for an operation it does not serve. */

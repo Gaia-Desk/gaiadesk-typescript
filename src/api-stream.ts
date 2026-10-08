@@ -8,7 +8,7 @@
 //   same OutputStream the CLI transport gives: stdout/stderr chunks, then
 //   wait() with the exit, its `result` and `error`.
 
-import { GaiaDeskError, UnreachableError, errorEnvelope } from './errors.js';
+import { ConnectionLostError, GaiaDeskError, OperationFailedError, ProtocolError, RefusedError, UnreachableError, UsageError, errorEnvelope } from './errors.js';
 import { exitFromEvent, parseExecEvent } from './exec-stream.js';
 import type { Chunk, Exit, OutputStream } from './proc.js';
 import { execError } from './results.js';
@@ -113,13 +113,24 @@ export function deskOpExit(kind: string): number {
   return 255;
 }
 
+/** The error kind (one of the six, by the error's class) a stream's exit reports for an error with no envelope. */
+function streamKind(e: GaiaDeskError): string {
+  if (e instanceof ProtocolError) return 'protocol';
+  if (e instanceof ConnectionLostError) return 'connection_lost';
+  if (e instanceof UnreachableError) return 'unreachable';
+  if (e instanceof RefusedError) return 'refused';
+  if (e instanceof OperationFailedError) return 'failed';
+  if (e instanceof UsageError) return 'usage';
+  return e.kind === 'network' ? 'unreachable' : e.kind;
+}
+
 /** The Exit for an error that ended (or prevented) a stream. */
 export function exitForError(e: GaiaDeskError): Exit {
   const exit: Exit = { exitCode: e.exitCode, signal: null, stderrTail: e.message };
   const env = errorEnvelope(e.json);
   const error = env
     ? execError({ kind: env.kind, message: env.message || e.message, reason: env.reason, desk: env.desk })
-    : execError({ kind: e.kind === 'network' ? 'unreachable' : e.kind, message: e.message, reason: e.reason ?? undefined, desk: e.desk ?? undefined });
+    : execError({ kind: streamKind(e), message: e.message, reason: e.reason ?? undefined, desk: e.desk ?? undefined });
   if (error) exit.error = error;
   return exit;
 }

@@ -155,7 +155,10 @@ test('base64: standard with padding, url-safe without', () => {
 });
 
 test('the WebCrypto path (browsers, serverless) gives what node:crypto gives', async (t) => {
-  const web = webPrimitives((globalThis as unknown as { crypto: Parameters<typeof webPrimitives>[0] }).crypto);
+  // Node 18 has no global WebCrypto (browsers and Node 19+ do): its node:crypto one then.
+  type Wc = Parameters<typeof webPrimitives>[0];
+  const wc = (globalThis as unknown as { crypto?: Wc }).crypto ?? ((await import('node:crypto')).webcrypto as unknown as Wc);
+  const web = webPrimitives(wc);
   try {
     await web.publicOf(DESK_SECRET);
   } catch {
