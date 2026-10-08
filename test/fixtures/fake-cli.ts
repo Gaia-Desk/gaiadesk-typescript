@@ -245,7 +245,8 @@ async function main(): Promise<number> {
     case 'cp': {
       const pos = argv.slice(1).filter((a) => !a.startsWith('-'));
       const [src, dst] = pos;
-      const remote = /^[\w-]+:/.test(src) ? src : dst;
+      // `<desk>:<path>` is the remote side; a Windows drive (`C:\…`) is a local path.
+      const remote = /^[\w-]{2,}:/.test(src) ? src : dst;
       const d = remote.slice(0, remote.indexOf(':'));
       if (d === REFUSED) return fail('refused', 'file transfer is turned off for you', 254, { desk: d });
       if (d === PLAIN) {
