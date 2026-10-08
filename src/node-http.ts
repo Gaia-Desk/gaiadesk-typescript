@@ -12,6 +12,7 @@ import type { Duplex } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import type { ByteStreamLike } from './api-stream.js';
 import type { FetchLike, ResponseLike } from './api.js';
+import { markUnsent } from './api-retry.js';
 
 /** How a request reaches the server, and the Host header it is sent with. */
 export interface NodeFetchOptions {
@@ -85,7 +86,10 @@ export function nodeFetch(o: NodeFetchOptions): FetchLike {
       socket = await o.connect(u, signal);
     } catch (e) {
       if (signal?.aborted) throw aborted();
-      throw o.unreachable(e as Error);
+      // The connection was never made, so nothing was sent (sent again for any method) —
+      // unless the transport refused it itself (lan: the pinned fingerprint did not match).
+      const err = o.unreachable(e as Error);
+      throw err === e ? err : markUnsent(err);
     }
     const body = init.body === undefined ? undefined : typeof init.body === 'string' ? Buffer.from(init.body, 'utf8') : Buffer.from(init.body.buffer, init.body.byteOffset, init.body.byteLength);
     const headers: Record<string, string> = { ...init.headers, Host: o.host ?? u.host };

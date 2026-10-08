@@ -11,6 +11,7 @@
 
 import { ApiTransport } from './api.js';
 import type { TimeoutOptions } from './api-timeouts.js';
+import type { RetryOptions } from './api-retry.js';
 import { GaiaDeskError, UnreachableError, UsageError } from './errors.js';
 import { nodeFetch } from './node-http.js';
 
@@ -68,6 +69,8 @@ export interface LocalOptions {
   env?: Env;
   /** Network timeouts (as the API transport's). */
   timeouts?: TimeoutOptions;
+  /** Retries (as the API transport's). */
+  retry?: RetryOptions;
 }
 
 function nonEmpty(v: string | undefined, what: string): string | undefined {
@@ -154,6 +157,7 @@ export function localTransport(o: LocalOptions = {}): ApiTransport {
     where: 'the desk\'s local API',
     fetch,
     timeouts: o.timeouts,
+    retry: o.retry,
     async credentials(callToken): Promise<Record<string, string>> {
       const t = callToken ?? deskToken;
       if (t) return { 'X-GaiaDesk-Desk-Token': t };

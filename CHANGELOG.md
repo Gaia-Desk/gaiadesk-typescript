@@ -2,6 +2,37 @@
 
 ## 0.1.1
 
+### retries: one rule in every GaiaDesk SDK
+
+- api, local and lan transports: option `retry: { maxRetries, baseDelayMs,
+  maxDelayMs, maxRetryWaitMs }` (defaults 2 / 250 / 8000 / 60000;
+  `maxRetries: 0` turns retries off; negative, fractional `maxRetries` or
+  non-numbers are a `UsageError`). Before, the SDK never sent a request
+  again; now it does exactly when that cannot run anything twice:
+  - a connection never made (DNS, refused, a TLS handshake cut off, a local
+    socket or pipe not there): any method;
+  - a connection lost after sending, or 502, 503, 504: GETs only (a 503
+    `api_disabled`, `desk_ops_disabled` or `local_api_off` is final);
+  - 429 (`rate_limited`, `desk_busy`) and 409 `idempotency_key_in_flight`:
+    any method.
+  Never: timeouts, anything whose answer has begun, a POST / PUT / DELETE
+  that may have reached the server, any other status.
+- 429 and 503 wait for `Retry-After`; one longer than `maxRetryWaitMs` is
+  thrown at once, carrying it. Otherwise backoff: min(`maxDelayMs`,
+  `baseDelayMs` × 2^n) × a random 0.5–1.0. A sealed operation is sealed
+  afresh for each attempt; the caller's `signal` ends a wait at once.
+- `idempotencyKey` per call (POST only; not sent for streams): the
+  `Idempotency-Key` header. It never makes a call retryable.
+- A fetch failure's message now names its cause
+  (`fetch failed: connect ECONNREFUSED …`); a connect timeout is kind
+  `timeout`.
+- Proven on the raw-socket server: refused then appearing (one POST
+  arrives), close/reset before any answer, 502/503/504, permanent 503,
+  `Retry-After` honoured and over the cap, 429, 409, a kept-alive connection
+  dropped under the next request (GET sent again, DELETE/POST/PUT never),
+  retries off, and the local transport's socket appearing late. New exports
+  `RetryOptions`, `DEFAULT_RETRY`.
+
 ### never hang on a dropped or stalled connection
 
 - api, local and lan transports: option `timeouts: { responseTimeoutMs,
@@ -18,8 +49,8 @@
   call until undici's own 300-second limits (api) or forever (local, lan).
 - Either timeout aborts the request, so its connection is abandoned, never
   reused; neither is retried. A connection closed or reset before any answer
-  is an `UnreachableError` (kind `network`) at once; nothing is re-sent (the
-  SDK has no retry policy, and fetch does not re-send on its own). A body cut
+  is an `UnreachableError` (kind `network`) at once; fetch re-sends nothing
+  on its own (see retries above for what the SDK sends again). A body cut
   off mid-way is a `ConnectionLostError` (kind `network`); the caller's
   `signal` still ends a call mid-body (kind `interrupted`).
 - A stream ended by a transport error reports its kind by the error's class

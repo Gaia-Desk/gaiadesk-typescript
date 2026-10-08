@@ -13,6 +13,8 @@ import { CommandError, GaiaDeskError, OperationFailedError, ProtocolError, Unrea
 import { ApiStream, deskOpExit } from './api-stream.js';
 import type { ByteStreamLike, SseEvent } from './api-stream.js';
 import { boundedFetch, guardBody, resolveTimeouts } from './api-timeouts.js';
+import { fetchFailure, giveUp, markUnsent, resolveRetry, retryWait, sleep } from './api-retry.js';
+import type { RetryOptions } from './api-retry.js';
 import type { TimeoutOptions, Timeouts } from './api-timeouts.js';
 import { E2eLayer, openAnswer, openDownload, openErrorEnvelope, sealUpload, unsealSse } from './api-e2e.js';
 import type { E2eOptions, Sealed } from './api-e2e.js';
@@ -53,6 +55,8 @@ export interface ApiOptions extends E2eOptions {
   fetch?: FetchLike;
   /** Network timeouts (default: an answer begins within 16 minutes, and no 90 s pass without a byte of it). */
   timeouts?: TimeoutOptions;
+  /** Retries (default: 2, backoff from 250 ms up to 8 s, Retry-After up to 60 s). */
+  retry?: RetryOptions;
 }
 
 /** The transports that speak GaiaDesk's /v1 HTTP API: hosted, on the desk itself, or a desk's LAN gateway. */
@@ -74,6 +78,8 @@ export interface HttpConfig {
   where: string;
   /** Network timeouts (as ApiOptions.timeouts). */
   timeouts?: TimeoutOptions;
+  /** Retries (as ApiOptions.retry). */
+  retry?: RetryOptions;
 }
 
 /** Per call: the abort signal, a desk token for this call only, and how long to wait for a sleeping desk. */
@@ -83,6 +89,12 @@ export interface ApiCallOptions {
   deskToken?: string;
   /** API transport: if the desk is asleep, ring it and wait up to this many seconds (0-120; `wake_s`). */
   wake?: number;
+  /**
+   * A POST's `Idempotency-Key` (1-255 printable ASCII characters): the same
+   * call again with the same key within 24 hours gets the first answer again.
+   * It does not make the SDK retry the call. Not sent for a streamed call.
+   */
+  idempotencyKey?: string;
 }
 
 interface Req extends ApiCallOptions {
@@ -145,6 +157,7 @@ export class ApiTransport {
   private readonly credentials: HttpConfig['credentials'];
   private readonly fetcher: FetchLike;
   private readonly timeouts: Timeouts;
+  private readonly retry: Required<RetryOptions>;
   /** End-to-end encryption of desk operations: the hosted API only. */
   private readonly e2e: E2eLayer | null = null;
 
@@ -157,6 +170,7 @@ export class ApiTransport {
       this.credentials = o.credentials;
       this.fetcher = o.fetch;
       this.timeouts = resolveTimeouts(o.timeouts);
+      this.retry = resolveRetry(o.retry);
       return;
     }
     if (typeof o.apiKey !== 'string' || !o.apiKey.trim()) throw new UsageError('apiKey must be a non-empty string', { kind: 'usage' });
@@ -164,6 +178,7 @@ export class ApiTransport {
       throw new UsageError('deskToken must be a non-empty string (a scoped agent token, gdagt_…)', { kind: 'usage' });
     }
     this.timeouts = resolveTimeouts(o.timeouts);
+    this.retry = resolveRetry(o.retry);
     const key = o.apiKey.trim();
     const deskToken = o.deskToken?.trim();
     this.transport = 'api';
@@ -202,12 +217,22 @@ export class ApiTransport {
    * One request; an HTTP failure is the typed error from its envelope. A desk
    * operation (`r.e2e`) on the hosted API is sealed end to end when the
    * desk can open it (api-e2e.ts decides, and retries once on
-   * `e2e_required` / `e2e_decrypt_failed`).
+   * `e2e_required` / `e2e_decrypt_failed`). Sent again only as api-retry.ts
+   * allows, each attempt sealed afresh; the caller's abort ends a wait at once.
    */
   async request(method: string, path: string, r: Req = {}, signal?: AbortSignal): Promise<ResponseLike> {
     const e2e = r.e2e;
-    if (!this.e2e || !e2e) return this.send(method, path, r, signal, null);
-    return this.e2e.call(e2e.desk, e2e.op, e2e.request, r, (sealed) => this.send(method, path, r, signal, sealed));
+    for (let n = 0; ; n++) {
+      try {
+        if (!this.e2e || !e2e) return await this.send(method, path, r, signal, null);
+        return await this.e2e.call(e2e.desk, e2e.op, e2e.request, r, (sealed) => this.send(method, path, r, signal, sealed));
+      } catch (e) {
+        const wait = retryWait(e, method, n, this.retry);
+        if (wait === null) throw giveUp(e);
+        const op = `${method} ${path}`;
+        await sleep(wait, [r.signal, signal], () => new GaiaDeskError(`${op}: interrupted`, { kind: 'interrupted', exitCode: 130, argv: [op] }));
+      }
+    }
   }
 
   private async send(method: string, path: string, r: Req, signal: AbortSignal | undefined, sealed: Sealed | null): Promise<ResponseLike> {
@@ -219,6 +244,12 @@ export class ApiTransport {
     }
     const headers = { ...(await this.credentials(r.deskToken)) };
     headers.Accept = r.accept ?? 'application/json';
+    if (r.idempotencyKey !== undefined && r.accept !== 'text/event-stream') {
+      const k = r.idempotencyKey;
+      if (method !== 'POST') throw new UsageError(`idempotencyKey is for POST calls, not ${op}`, { kind: 'usage', argv: [op] });
+      if (typeof k !== 'string' || !/^[\x20-\x7e]{1,255}$/.test(k)) throw new UsageError('an Idempotency-Key is 1 to 255 printable ASCII characters', { kind: 'usage', argv: [op] });
+      headers['Idempotency-Key'] = k;
+    }
     let body: string | Uint8Array | undefined;
     if (sealed) {
       // The sealed request carries what the query would have (path, tail, timeout); POST bodies become {"e2e": …}.
@@ -268,12 +299,16 @@ export class ApiTransport {
         if (e.argv.length === 0) Object.defineProperty(e, 'argv', { value: [op] });
         throw e;
       }
-      throw new UnreachableError(`${this.where} could not be reached: ${(e as Error)?.message ?? e}`, {
-        kind: 'network',
-        reason: 'network',
+      // fetch's own failure: the connection never made (sent again for any method), connecting
+      // timed out (never sent again), or lost after it may have been sent (GETs only).
+      const how = fetchFailure(e);
+      const err = new UnreachableError(`${this.where} could not be reached: ${causeText(e)}`, {
+        kind: how === 'timeout' ? 'timeout' : 'network',
+        reason: how === 'timeout' ? 'timeout' : 'network',
         exitCode: 255,
         argv: [op],
       });
+      throw how === 'unsent' ? markUnsent(err) : err;
     }
     // Every read of the body is bounded by the idle timeout; the caller's abort still ends it.
     res = guardBody(res, guard, state);
@@ -516,6 +551,7 @@ export class ApiTransport {
     if (o.out !== undefined) throw this.notServed('createToken({ out })', 'the API returns the secret; write it to a file yourself, or use the CLI or native transport');
     if (o.name === undefined || !o.name.trim()) throw new UsageError('createToken needs a name over the API transport', { kind: 'usage' });
     const desks = (typeof o.desks === 'string' ? [o.desks] : [...o.desks]).map(A.checkDesk);
+    if (o.idempotencyKey !== undefined && desks.length > 1) throw new UsageError('an idempotencyKey is for one request: createToken for one desk at a time with it', { kind: 'usage' });
     const spec: Record<string, unknown> = {
       name: o.name,
       expires_secs: seconds(o.expires ?? '7d', 'expires'),
@@ -552,6 +588,15 @@ export class ApiTransport {
     const e2e = { desk: A.checkDesk(deskId), op: 'token_revoke', request: { op: 'token_revoke', token: which } };
     return this.json<TokenRevokeResult>('DELETE', `${this.desk(deskId)}/tokens/${encodeURIComponent(which)}`, { ...o, e2e });
   }
+}
+
+/** A fetch failure's message with its innermost cause (`fetch failed: connect ECONNREFUSED 127.0.0.1:9`). */
+function causeText(e: unknown): string {
+  const top = (e as Error)?.message ?? String(e);
+  let x = (e as { cause?: unknown })?.cause as { message?: unknown; cause?: unknown } | undefined;
+  let last: string | null = null;
+  for (let i = 0; x && i < 8; x = x.cause as typeof x, i++) if (typeof x.message === 'string' && x.message) last = x.message;
+  return last && last !== top ? `${top}: ${last}` : top;
 }
 
 /** The typed error for a failed HTTP request: its error envelope, else a ProtocolError. */

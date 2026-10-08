@@ -9,6 +9,7 @@
 
 import { ApiTransport } from './api.js';
 import type { TimeoutOptions } from './api-timeouts.js';
+import type { RetryOptions } from './api-retry.js';
 import { UnreachableError, UsageError } from './errors.js';
 import type { ErrorDetails } from './errors.js';
 import { nodeFetch } from './node-http.js';
@@ -48,6 +49,8 @@ export interface LanOptions {
   deskToken?: string;
   /** Network timeouts (as the API transport's). */
   timeouts?: TimeoutOptions;
+  /** Retries (as the API transport's). */
+  retry?: RetryOptions;
 }
 
 /** The `lan` transport: an ApiTransport over pinned TLS to a desk's LAN gateway. */
@@ -110,6 +113,7 @@ export function lanTransport(o: LanOptions): ApiTransport {
     where: `the desk's LAN gateway (${origin})`,
     fetch,
     timeouts: o.timeouts,
+    retry: o.retry,
     credentials(callToken) {
       const t = callToken ?? deskToken;
       if (!t) {

@@ -199,11 +199,33 @@ const gd = new GaiaDesk({ apiKey, timeouts: { responseTimeoutMs: 60_000, idleTim
   `UsageError`. A timeout abandons the connection; it is not retried, and
   your `signal` still ends a call at any point (kind `interrupted`).
 - A connection closed or reset before any answer is an `UnreachableError`
-  (kind `network`) at once. The SDK does not retry requests, and Node's
-  `fetch` (undici) does not silently re-send one either, with or without a
-  body, even on a pooled connection closed before any answer (the local and
-  lan transports open one connection per request): `exec`, uploads, jobs,
-  tokens and wakes reach the desk at most once.
+  (kind `network`), sent again only as the retry rule below allows.
+
+**Retries.** A request is sent again only when that cannot run anything twice:
+
+- **The connection was never made** (DNS, refused, TLS handshake): any method — nothing was sent.
+- **The connection was lost after sending, or the answer was 502, 503 or 504**: GETs only (reads).
+  A 503 that says the API or desk operations are switched off is not retried.
+- **429** (`rate_limited`, `desk_busy`) and **409** `idempotency_key_in_flight`: any method — the server refused
+  it before acting.
+
+Timeouts are never retried, and nothing is retried once its answer has begun. A call that changes something
+(POST, PUT, DELETE) is never sent again after it may have reached the server; an `Idempotency-Key` is sent but
+does not make a call retryable. 429 and 503 wait for `Retry-After`; one longer than `retry.maxRetryWaitMs`
+(default 60 s) is not waited for — the error carries it. Otherwise the wait is exponential backoff with jitter:
+`retry.baseDelayMs` (default 250 ms) doubling up to `retry.maxDelayMs` (default 8 s), times a random 0.5–1.0.
+`retry.maxRetries` (default 2, so 3 attempts in all) sets how many times; 0 turns retries off. Each retry of
+a sealed operation is sealed afresh.
+
+```ts
+const gd = new GaiaDesk({ apiKey, retry: { maxRetries: 4, baseDelayMs: 500, maxDelayMs: 8000, maxRetryWaitMs: 60_000 } });
+```
+
+Node's `fetch` (undici) itself re-sends nothing, with or without a body, not even a GET on a pooled
+connection closed before any answer; the local and lan transports open one connection per request. Your
+`signal` ends a call during a retry wait at once (kind `interrupted`). POSTs take `idempotencyKey` (the
+`Idempotency-Key` header, 1-255 printable ASCII characters; not sent for streams): the same call again with
+the same key within 24 hours gets the first answer again.
 
 ## End-to-end encryption
 
