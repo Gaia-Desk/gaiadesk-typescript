@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2
+
+- Administrator work (root / SYSTEM) is not available over any API: the
+  hosted API and a desk's own API (local, lan) refuse an exec with
+  `admin: true` (200, exit 254, before anything runs) and a token minted
+  with the `admin` scope (403), both with reason `admin_not_via_api`, which
+  the SDK reports as a `RefusedError` (kind `refused`; a stream ends with
+  that error, exit 254). Run administrator work with
+  `gaiadesk-cli exec --admin` (or MCP). The SDK never had an `admin` exec
+  option or an `admin` scope constant, so no API changes; asking for the
+  `admin` scope through `createToken` over the API is now refused by the
+  server. Nothing landed on main after v0.1.1 besides this.
+
 ## 0.1.1
 
 ### retries: one rule in every GaiaDesk SDK

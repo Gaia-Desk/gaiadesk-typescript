@@ -177,6 +177,9 @@ available over the API transport; use the CLI or native transport"):
 `stdin: true`, `whoami`, and the CLI's own `version`, `versionInfo`,
 `features`, `raw`.
 
+Administrator work (root / SYSTEM) is only available through `gaiadesk-cli exec --admin`, not the API
+(hosted, local or lan): the API refuses it with `admin_not_via_api`, a `RefusedError`.
+
 **Timeouts** (`timeouts: { responseTimeoutMs, idleTimeoutMs }`, in
 milliseconds, on the api, local and lan transports) make a server or proxy
 that stops answering an error, never a hang:

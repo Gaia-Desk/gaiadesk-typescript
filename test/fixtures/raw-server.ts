@@ -15,6 +15,8 @@ export interface StatusMode {
   retryAfter?: number;
   reason?: string;
   kind?: string;
+  /** The answer's JSON body instead of the error envelope (a 200 that carries a refusal). */
+  body?: string;
 }
 
 export type RawMode =
@@ -54,7 +56,7 @@ export interface RawServer {
 }
 
 const EVENT = 'event: stdout\ndata: {"event":"stdout","data":"hi"}\n\n';
-const REASON: Record<number, string> = { 200: 'OK', 409: 'Conflict', 429: 'Too Many Requests', 502: 'Bad Gateway', 503: 'Service Unavailable', 504: 'Gateway Timeout' };
+const REASON: Record<number, string> = { 200: 'OK', 403: 'Forbidden', 409: 'Conflict', 429: 'Too Many Requests', 502: 'Bad Gateway', 503: 'Service Unavailable', 504: 'Gateway Timeout' };
 
 function answer(status: number, body: string, extra = '', keepAlive = false): string {
   return `HTTP/1.1 ${status} ${REASON[status] ?? 'Status'}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n${extra}Connection: ${keepAlive ? 'keep-alive' : 'close'}\r\n\r\n${body}`;
@@ -63,7 +65,7 @@ function answer(status: number, body: string, extra = '', keepAlive = false): st
 function statusAnswer(m: StatusMode): string {
   const kind = m.kind ?? (m.status === 429 ? 'refused' : m.status === 409 ? 'usage' : 'unreachable');
   const reason = m.reason ?? (m.status === 429 ? 'rate_limited' : m.status === 409 ? 'idempotency_key_in_flight' : 'unavailable');
-  const body = JSON.stringify({ error: { kind, message: `status ${m.status}`, reason, request_id: 'req_raw' } });
+  const body = m.body ?? JSON.stringify({ error: { kind, message: `status ${m.status}`, reason, request_id: 'req_raw' } });
   return answer(m.status, body, m.retryAfter === undefined ? '' : `Retry-After: ${m.retryAfter}\r\n`);
 }
 
