@@ -70,11 +70,13 @@ test('vectors: the desk side opens the request and the input frames', async () =
 
 test('round trip with fresh keys: request, input both ways, events in order', async () => {
   const deskPub = await x25519Public(DESK_SECRET);
+  const before = Math.floor(Date.now() / 1000);
   const { request, seal } = await sealRequest(deskPub, '123456789', 'file_put', { op: 'file_put', path: '/tmp/x', size: 3 });
+  const after = Math.ceil(Date.now() / 1000);
   const desk = await openRequest(DESK_SECRET, '123456789', 'file_put', request);
   const inner = JSON.parse(dec(desk.plain));
   assert.equal(inner.v, 1);
-  assert.ok(Math.abs(inner.ts - Date.now() / 1000) < 5);
+  assert.ok(inner.ts >= before && inner.ts <= after, `sealed at ${inner.ts}, between ${before} and ${after}`);
   assert.deepEqual(inner.request, { op: 'file_put', path: '/tmp/x', size: 3 });
   const f = await seal.sealInput(true, utf8('abc'));
   assert.deepEqual(desk.seal.openInput(f), { last: true, data: utf8('abc') });

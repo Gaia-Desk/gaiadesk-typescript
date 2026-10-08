@@ -10,6 +10,10 @@ import { createServer } from 'node:net';
 import type { Server, Socket } from 'node:net';
 
 /** An error answer: its status, `Retry-After` (seconds) and envelope reason. */
+/** `trickle`: one byte every TRICKLE_MS, TRICKLE_CHUNKS of them. */
+export const TRICKLE_MS = 100;
+export const TRICKLE_CHUNKS = 30;
+
 export interface StatusMode {
   status: number;
   retryAfter?: number;
@@ -111,10 +115,10 @@ export async function startRawServer(mode: RawMode, path?: string, port = 0): Pr
           let n = 0;
           const t = setInterval(() => {
             if (s.destroyed) return clearInterval(t);
-            if (++n <= 8) return void s.write('1\r\nx\r\n');
+            if (++n <= TRICKLE_CHUNKS) return void s.write('1\r\nx\r\n');
             clearInterval(t);
             s.end('0\r\n\r\n');
-          }, 300);
+          }, TRICKLE_MS);
           return;
         }
       }

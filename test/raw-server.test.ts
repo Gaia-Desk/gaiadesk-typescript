@@ -16,15 +16,27 @@ import { join } from 'node:path';
 import { ConnectionLostError, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_RESPONSE_TIMEOUT_MS, DEFAULT_RETRY, GaiaDesk, GaiaDeskError, ProtocolError, RefusedError, UnreachableError, UsageError } from '../dist/index.js';
 import type { GaiaDeskOptions, RetryOptions, TimeoutOptions } from '../dist/index.js';
 import { backoffMs, resolveRetry, retryWait } from '../dist/api-retry.js';
-import { freePort, startRawServer } from './fixtures/raw-server.js';
+import { freePort, startRawServer, TRICKLE_CHUNKS, TRICKLE_MS } from './fixtures/raw-server.js';
 import type { RawMode, RawServer } from './fixtures/raw-server.js';
 
 const D = '123456789';
 /** A hang shows as this, not as a stuck run. */
-const BOUND = 10_000;
+const BOUND = 25_000;
+/** The response timeout these clients run with unless a test sets one: the
+ * long wait a stall must NOT have ended on (see `sooner`). */
+const LONG = 60_000;
 
 const gdOf = (s: RawServer | string, t: TimeoutOptions = {}, retry: RetryOptions = {}) =>
-  new GaiaDesk({ apiKey: 'ak_t', deskToken: 'gdagt_t', baseUrl: typeof s === 'string' ? s : s.url, e2e: 'off', timeouts: { idleTimeoutMs: 1000, responseTimeoutMs: 30_000, ...t }, retry: { maxRetries: 2, baseDelayMs: 5, ...retry } });
+  new GaiaDesk({ apiKey: 'ak_t', deskToken: 'gdagt_t', baseUrl: typeof s === 'string' ? s : s.url, e2e: 'off', timeouts: { idleTimeoutMs: 1000, responseTimeoutMs: LONG, ...t }, retry: { maxRetries: 2, baseDelayMs: 5, ...retry } });
+
+/** `took` was clearly shorter than `slow`, the wait the SDK must not have
+ * made (a longer timeout, a back-off, a Retry-After). Compared with half of
+ * that wait rather than a tight figure: a loaded machine stretches a run by
+ * seconds (8 of 250 tests once failed `took < 5000` that way), never by the
+ * tens of seconds these alternatives take. */
+function sooner(took: number, slow: number, what: string): void {
+  assert.ok(took < slow / 2, `${what}: took ${took} ms, not clearly shorter than the ${slow} ms it must not have waited`);
+}
 
 /** `p` settled within BOUND, else a failure saying the SDK hung. */
 function within<T>(p: Promise<T>, what = 'the call'): Promise<T> {
@@ -66,7 +78,7 @@ for (const mode of ['closeBeforeResponse', 'resetBeforeResponse'] as const) {
       const gd = gdOf(s);
       const { e, took } = await fails(UnreachableError, () => gd.downloadBytes(D, '/tmp/x'));
       assert.deepEqual([e.kind, e.reason, e.argv], ['network', 'network', ['GET /desks/123456789/files']]);
-      assert.ok(took < 5000, `took ${took} ms`);
+      sooner(took, LONG, 'the retries');
       assert.equal(s.count('GET'), 3); // the first try and two retries; fetch itself re-sends nothing
       await fails(UnreachableError, () => gd.stats(D));
       assert.equal(s.count('GET'), 6);
@@ -110,7 +122,7 @@ test('stalled mid-download: ConnectionLostError (timeout) within the idle timeou
     const { e, took } = await fails(ConnectionLostError, () => gd.downloadBytes(D, '/tmp/x'));
     assert.deepEqual([e.kind, e.reason, e.exitCode], ['timeout', 'timeout', 255]);
     assert.match(e.message, /idleTimeoutMs/);
-    assert.ok(took < 5000, `took ${took} ms`);
+    sooner(took, LONG, 'the idle timeout, not the response timeout');
     const file = join(mkdtempSync(join(tmpdir(), 'gaiadesk-raw-')), 'x');
     await fails(ConnectionLostError, () => gd.download(D, '/tmp/x', file));
     assert.equal(existsSync(file), false);
@@ -119,18 +131,23 @@ test('stalled mid-download: ConnectionLostError (timeout) within the idle timeou
 
 test('a body that keeps flowing never times out: the idle limit is per read, not a deadline', () =>
   withServer('trickle', async (s) => {
-    const gd = gdOf(s, { idleTimeoutMs: 1000 });
+    // A byte every TRICKLE_MS, 20 times the gap under the idle limit (a
+    // stalled event loop must not starve the body past it), for longer than
+    // the limit in all.
+    const idleTimeoutMs = 2000;
+    const gd = gdOf(s, { idleTimeoutMs });
     const t = Date.now();
     const bytes = await within(gd.downloadBytes(D, '/tmp/slow'));
-    assert.equal(new TextDecoder().decode(bytes), 'xxxxxxxx');
-    assert.ok(Date.now() - t > 1500, 'the body took longer than the idle timeout in all');
+    assert.equal(new TextDecoder().decode(bytes), 'x'.repeat(TRICKLE_CHUNKS));
+    assert.ok(idleTimeoutMs >= 20 * TRICKLE_MS && TRICKLE_CHUNKS * TRICKLE_MS > idleTimeoutMs, 'the trickle is set up as described');
+    assert.ok(Date.now() - t > idleTimeoutMs, 'the body took longer than the idle timeout in all');
   }));
 
 test('stalled mid-JSON: ConnectionLostError (timeout)', () =>
   withServer('stallMidJson', async (s) => {
     const { e, took } = await fails(ConnectionLostError, () => gdOf(s).stats(D));
     assert.equal(e.kind, 'timeout');
-    assert.ok(took < 5000, `took ${took} ms`);
+    sooner(took, LONG, 'the idle timeout, not the response timeout');
     assert.equal(s.count('GET'), 1);
   }));
 
@@ -156,7 +173,7 @@ test('a silent server: UnreachableError (timeout) within the response timeout, n
     const { e, took } = await fails(UnreachableError, () => gd.stats(D));
     assert.deepEqual([e.kind, e.reason, e.exitCode], ['timeout', 'timeout', 255]);
     assert.match(e.message, /responseTimeoutMs/);
-    assert.ok(took < 5000, `took ${took} ms`);
+    sooner(took, LONG, 'a 1 s response timeout');
     await fails(UnreachableError, () => gd.uploadBytes(new Uint8Array(4 * 1024 * 1024), D, '/tmp/big'));
     assert.equal(s.count('GET'), 1); // a timeout is never retried
     assert.equal(s.count('PUT'), 1);
@@ -166,7 +183,7 @@ test('a silent server: UnreachableError (timeout) within the response timeout, n
     setTimeout(() => ctrl.abort(), 200);
     const { e: aborted, took: t2 } = await fails(GaiaDeskError, () => patient.stats(D, { signal: ctrl.signal }));
     assert.equal(aborted.kind, 'interrupted');
-    assert.ok(t2 < 5000, `took ${t2} ms`);
+    sooner(t2, LONG, 'the abort, not the 600 s response timeout');
   }));
 
 test('the caller aborting mid-body is an interruption, not a timeout', () =>
@@ -248,7 +265,8 @@ test('a connection never made is sent again for any method: an exec reaches the 
     s = await startRawServer('ok', undefined, port);
   }, 100);
   try {
-    const r = await within(gdOf(url, {}, { maxRetries: 6, baseDelayMs: 100, maxDelayMs: 200 }).exec(D, 'deploy'));
+    // Up to ~6 s of tries for a server due at 100 ms: room for a loaded machine.
+    const r = await within(gdOf(url, {}, { maxRetries: 30, baseDelayMs: 100, maxDelayMs: 200 }).exec(D, 'deploy'));
     assert.equal(r.stdout, 'ok');
     assert.equal((s as RawServer | null)?.count('POST'), 1);
   } finally {
@@ -259,7 +277,7 @@ test('a connection never made is sent again for any method: an exec reaches the 
   const { e, took } = await fails(UnreachableError, () => gdOf(`http://127.0.0.1:${closed}/v1`, {}, { maxRetries: 0, baseDelayMs: 10_000 }).exec(D, 'deploy'));
   assert.equal(e.kind, 'network');
   assert.match(e.message, /ECONNREFUSED/);
-  assert.ok(took < 1000, `took ${took} ms`);
+  sooner(took, 10_000, 'retries 0: no back-off');
 });
 
 for (const status of [502, 503, 504]) {
@@ -292,7 +310,7 @@ test('503: a switched-off API is final; Retry-After is honoured; the caller abor
     setTimeout(() => ctrl.abort(), 150);
     const { e, took } = await fails(GaiaDeskError, () => gdOf(s).stats(D, { signal: ctrl.signal }));
     assert.equal(e.kind, 'interrupted');
-    assert.ok(took < 2000, `took ${took} ms`);
+    sooner(took, 30_000, 'the abort, not the 30 s Retry-After');
     assert.equal(s.count('GET'), 1);
   });
 });
@@ -306,7 +324,7 @@ test('429: any method is sent again after Retry-After; one longer than maxRetryW
   await withServer({ status: 429, retryAfter: 120, reason: 'desk_busy' }, async (s) => {
     const { e, took } = await fails(RefusedError, () => gdOf(s).exec(D, 'deploy'));
     assert.deepEqual([e.status, e.reason, e.retryAfter], [429, 'desk_busy', 120]);
-    assert.ok(took < 1000, `took ${took} ms`);
+    sooner(took, LONG, 'thrown at once, not after the 120 s Retry-After');
     assert.equal(s.count('POST'), 1);
   });
 });
