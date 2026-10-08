@@ -20,10 +20,12 @@ const OFFLINE = 'offline-desk';
 const USAGE = 'usage-desk';
 const PLAIN = 'plain-desk';
 
+/** The SDK warns once per desk that operations go in the clear (these desks list no end-to-end key). */
+const quiet = () => {};
 const api = await startMockApi();
 after(() => api.close());
 
-const apiGd = (o: GaiaDeskOptions = {}) => new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: api.url, ...o });
+const apiGd = (o: GaiaDeskOptions = {}) => new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: api.url, onWarning: quiet, ...o });
 const last = () => api.requests[api.requests.length - 1];
 const body = () => JSON.parse(last().body.toString('utf8'));
 
@@ -36,7 +38,7 @@ test('without apiKey the client keeps the CLI transport, and no HTTP request is 
   assert.equal(gd.backend, 'cli');
   assert.equal((await gd.exec(OK, 'hostname')).stdout, 'ran: hostname\n');
   assert.equal(await gd.version(), 'gaiadesk-cli 0.10.324');
-  assert.equal(new GaiaDesk({ env: { PATH: process.env.PATH } }).backend, 'cli', 'the default is unchanged');
+  assert.equal(new GaiaDesk({ native: null, env: { PATH: process.env.PATH } }).backend, 'cli', 'the default is unchanged (without the native library)');
   assert.equal(api.requests.length, before);
 });
 
@@ -63,7 +65,7 @@ test('every request carries the API key and the desk token; a call may override 
   assert.equal(last().headers['x-gaiadesk-desk-token'], 'gdagt_other');
   assert.deepEqual(last().query, { wake_s: '30' });
   await assert.rejects(gd.stats(OK, { wake: 121 }), UsageError);
-  await new GaiaDesk({ apiKey: 'session-person', baseUrl: api.url }).listTokens(OK);
+  await new GaiaDesk({ apiKey: 'session-person', baseUrl: api.url, onWarning: quiet }).listTokens(OK);
   assert.equal(last().headers['x-gaiadesk-desk-token'], undefined, 'no desk token unless one is given');
 });
 
@@ -87,7 +89,7 @@ test('runJob sends a JobSpec, createToken a MintSpec per desk, logs its tail', a
   assert.deepEqual(body(), { name: 'build', command: ['make all'], limits: { priority: 'low', cpu_percent: 50, mem_mb: 2048, keep_awake: true }, cwd: 'src' });
   await gd.jobLogs(OK, 'build', { tail: 10 });
   assert.deepEqual([last().path, last().query], [`/v1/desks/${OK}/jobs/build/logs`, { tail: '10' }]);
-  const owner = new GaiaDesk({ apiKey: 'session-person', baseUrl: api.url });
+  const owner = new GaiaDesk({ apiKey: 'session-person', baseUrl: api.url, onWarning: quiet });
   await owner.createToken({ desks: OK, name: 'bot', expires: '24h', cwd: '/srv', lowPriv: true });
   assert.deepEqual(body(), { name: 'bot', expires_secs: 86400, scopes: ['exec', 'cp', 'jobs'], cwd: '/srv', low_priv: true });
   await owner.revokeToken(OK, '9f3a1c2b7d004e11');
@@ -156,14 +158,14 @@ test('seconds: durations as the API takes them', () => {
 // ───────────────────────────── errors ─────────────────────────────
 
 test('error envelopes: refused 403, unreachable 409 with its reason, usage 400, request ids kept', async () => {
-  const noToken = new GaiaDesk({ apiKey: 'ak_test', baseUrl: api.url });
+  const noToken = new GaiaDesk({ apiKey: 'ak_test', baseUrl: api.url, onWarning: quiet });
   await assert.rejects(noToken.stats(OK), (e) => {
     assert.ok(e instanceof RefusedError);
     assert.deepEqual([e.kind, e.reason, e.status, e.exitCode, e.desk], ['refused', 'desk_token_required', 403, 254, OK]);
     assert.match(e.requestId ?? '', /^req_[0-9a-f]{24}$/);
     return true;
   });
-  await assert.rejects(new GaiaDesk({ apiKey: 'ak_test', baseUrl: api.url }).listTokens(OK), (e) => e instanceof RefusedError && /signed-in person/.test(e.message));
+  await assert.rejects(new GaiaDesk({ apiKey: 'ak_test', baseUrl: api.url, onWarning: quiet }).listTokens(OK), (e) => e instanceof RefusedError && /signed-in person/.test(e.message));
   await assert.rejects(apiGd().exec(OFFLINE, 'x'), (e) => e instanceof UnreachableError && e.status === 409 && e.kind === 'offline' && e.reason === 'offline' && e.desk === OFFLINE);
   await assert.rejects(apiGd().exec(USAGE, 'x'), (e) => e instanceof UsageError && e.status === 400 && e.kind === 'usage');
   await assert.rejects(apiGd().stats(PLAIN), (e) => e instanceof UnreachableError && e.status === 504 && e.kind === 'timeout');
@@ -172,7 +174,7 @@ test('error envelopes: refused 403, unreachable 409 with its reason, usage 400, 
 test('429 keeps Retry-After; a body that is not an envelope is a ProtocolError; no connection is unreachable/network', async () => {
   await assert.rejects(apiGd().stats(LIMITED_DESK), (e) => e instanceof RefusedError && e.status === 429 && e.reason === 'rate_limited' && e.retryAfter === 7);
   await assert.rejects(apiGd().stats(HTML_DESK), (e) => e instanceof ProtocolError && e.kind === 'protocol' && e.status === 500 && /no error envelope/.test(e.message));
-  const down = new GaiaDesk({ apiKey: 'ak_test', baseUrl: 'http://127.0.0.1:1/v1' });
+  const down = new GaiaDesk({ apiKey: 'ak_test', baseUrl: 'http://127.0.0.1:1/v1', onWarning: quiet });
   await assert.rejects(down.stats(OK), (e) => e instanceof UnreachableError && e.kind === 'network' && e.reason === 'network' && e.exitCode === 255);
   const s = down.execStream(OK, 'x');
   const exit = await s.wait();
@@ -180,7 +182,7 @@ test('429 keeps Retry-After; a body that is not an envelope is a ProtocolError; 
 });
 
 test('a stream refused before it starts ends with the typed error; kill() stops it', async () => {
-  const s = new GaiaDesk({ apiKey: 'ak_test', baseUrl: api.url }).execStream(OK, 'x');
+  const s = new GaiaDesk({ apiKey: 'ak_test', baseUrl: api.url, onWarning: quiet }).execStream(OK, 'x');
   const chunks = [];
   for await (const c of s) chunks.push(c);
   assert.equal(chunks.length, 0);
@@ -219,7 +221,7 @@ test('SseParser: events split anywhere, CRLF across chunks, comments, multi-line
 
 test('operations the API does not serve are UsageErrors that say so, and send nothing', async () => {
   const own = await startMockApi(); // its own server: nothing else in flight
-  const gd = new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: own.url });
+  const gd = new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: own.url, onWarning: quiet });
   const notServed = (e: unknown) => e instanceof UsageError && e.kind === 'usage' && /not available over the API transport/.test(e.message);
   const dir = mkdtempSync(join(tmpdir(), 'gaiadesk-sdk-'));
   for (const call of [

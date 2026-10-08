@@ -245,6 +245,10 @@ async function handle(res: ServerResponse, rec: Recorded, o: MockOptions): Promi
   if (desk === LIMITED_DESK) {
     return sendError(res, { kind: 'refused', reason: 'rate_limited', message: 'Too many requests for this key; try again in 7 s.' }, { 'Retry-After': '7' });
   }
+  if (rest === '' && rec.method === 'GET') {
+    // One desk: a desk without an end-to-end key (the SDK then sends plaintext, warned once).
+    return sendJson(res, 200, { desk_id: desk, online: !desk.startsWith('offline'), features: ['desk_op'], sources: ['account'] });
+  }
   const tokens = rest.startsWith('/tokens');
   if (tokens && isKey) {
     return sendError(res, { kind: 'refused', reason: 'session_required', message: "token administration over the API works only for a signed-in person's own desk", desk });

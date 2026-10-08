@@ -32,6 +32,8 @@ const REFUSED = 'refused-desk';
 const USAGE = 'usage-desk';
 const PLAIN = 'plain-desk';
 
+/** The SDK warns once per desk that operations go in the clear (these desks list no end-to-end key). */
+const quiet = () => {};
 const api = await startMockApi();
 after(() => api.close());
 const socketPath =
@@ -63,9 +65,9 @@ const TRANSPORTS: Transport[] = [
   { name: 'cli', desk: () => cliClient(), owner: () => cliClient({ code: 'owner-pw' }), anon: () => cliClient() },
   {
     name: 'api',
-    desk: () => new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: api.url }),
-    owner: () => new GaiaDesk({ apiKey: 'session-person', baseUrl: api.url }),
-    anon: () => new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: api.url }),
+    desk: () => new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: api.url, onWarning: quiet }),
+    owner: () => new GaiaDesk({ apiKey: 'session-person', baseUrl: api.url, onWarning: quiet }),
+    anon: () => new GaiaDesk({ apiKey: 'ak_test', deskToken: 'gdagt_test', baseUrl: api.url, onWarning: quiet }),
   },
   {
     name: 'local',

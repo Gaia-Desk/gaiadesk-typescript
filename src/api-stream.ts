@@ -124,6 +124,12 @@ export function exitForError(e: GaiaDeskError): Exit {
   return exit;
 }
 
+/** A started stream: its body, and (end-to-end encrypted) how its sealed events open into the plaintext ones. */
+export interface StreamStart {
+  body: ByteStreamLike | null;
+  unseal?: (events: AsyncIterable<SseEvent>) => AsyncIterable<SseEvent>;
+}
+
 /**
  * An SSE stream from the API as an OutputStream. `start` makes the request
  * (it throws the typed error for an HTTP failure); `kind` says which events
@@ -142,7 +148,7 @@ export class ApiStream implements OutputStream {
   constructor(
     op: string,
     private readonly kind: 'exec' | 'logs',
-    start: (signal: AbortSignal) => Promise<{ body: ByteStreamLike | null }>,
+    start: (signal: AbortSignal) => Promise<StreamStart>,
     signal?: AbortSignalLike,
     private readonly jobName = '',
   ) {
@@ -162,11 +168,12 @@ export class ApiStream implements OutputStream {
     for (const f of w) f();
   }
 
-  private async run(start: (signal: AbortSignal) => Promise<{ body: ByteStreamLike | null }>): Promise<Exit> {
+  private async run(start: (signal: AbortSignal) => Promise<StreamStart>): Promise<Exit> {
     try {
       const res = await start(this.ctrl.signal);
       if (!res.body) throw new GaiaDeskError('the GaiaDesk API sent an event stream with no body', { kind: 'protocol', argv: this.argv });
-      return this.kind === 'exec' ? await this.execEvents(res.body) : await this.logEvents(res.body);
+      const events = res.unseal ? res.unseal(sseEvents(res.body)) : sseEvents(res.body);
+      return this.kind === 'exec' ? await this.execEvents(events) : await this.logEvents(events);
     } catch (e) {
       if (this.killed) return { exitCode: 130, signal: null, stderrTail: 'interrupted' };
       const err = e instanceof GaiaDeskError ? e : new UnreachableError(`the GaiaDesk API could not be reached: ${(e as Error)?.message ?? e}`, { kind: 'network', reason: 'network', exitCode: 255, argv: this.argv });
@@ -192,9 +199,9 @@ export class ApiStream implements OutputStream {
     return v as Record<string, unknown>;
   }
 
-  private async execEvents(body: ByteStreamLike): Promise<Exit> {
+  private async execEvents(events: AsyncIterable<SseEvent>): Promise<Exit> {
     let last: ExecEvent | null = null;
-    for await (const sse of sseEvents(body)) {
+    for await (const sse of events) {
       const o = ApiStream.object(sse);
       const ev = o ? parseExecEvent(JSON.stringify(o)) : null;
       if (!ev) continue;
@@ -205,8 +212,8 @@ export class ApiStream implements OutputStream {
     return exitFromEvent({ exitCode: null, signal: null, stderrTail: '' }, last);
   }
 
-  private async logEvents(body: ByteStreamLike): Promise<Exit> {
-    for await (const sse of sseEvents(body)) {
+  private async logEvents(events: AsyncIterable<SseEvent>): Promise<Exit> {
+    for await (const sse of events) {
       const o = ApiStream.object(sse);
       if (!o) continue;
       if (o.event === 'output' && typeof o.data === 'string') {

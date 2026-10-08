@@ -11,7 +11,11 @@
 import * as A from './args.js';
 import { CommandError, GaiaDeskError, OperationFailedError, ProtocolError, UnreachableError, UsageError, errorEnvelope, envelopeDetails, errorForKind, sdkKind } from './errors.js';
 import { ApiStream, deskOpExit } from './api-stream.js';
-import type { ByteStreamLike } from './api-stream.js';
+import type { ByteStreamLike, SseEvent } from './api-stream.js';
+import { E2eLayer, openAnswer, openDownload, openErrorEnvelope, sealUpload, unsealSse } from './api-e2e.js';
+import type { E2eOptions, Sealed } from './api-e2e.js';
+import { E2E_FRAMES_CONTENT_TYPE, E2E_HEADER, requestHeader } from './e2e.js';
+import type { CallerSeal } from './e2e.js';
 import { memMb } from './native-args.js';
 import type { OutputStream } from './proc.js';
 import { listOf, neverRan, normalizeExecResult, textOf } from './results.js';
@@ -40,7 +44,7 @@ export interface ResponseLike {
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 
-export interface ApiOptions {
+export interface ApiOptions extends E2eOptions {
   apiKey: string;
   deskToken?: string;
   baseUrl?: string;
@@ -80,7 +84,15 @@ interface Req extends ApiCallOptions {
   json?: unknown;
   bytes?: Uint8Array;
   accept?: string;
+  /** A desk operation (sealed end to end when the api transport does): its desk, its name, and the request it is (`{"op": …}`). */
+  e2e?: { desk: string; op: string; request: Record<string, unknown> };
 }
+
+/** The query parameters a sealed request carries inside instead. */
+const SEALED_QUERY = ['path', 'tail', 'timeout'];
+
+/** The seal of a response to a sealed operation (its events open with it). */
+const sealOf = new WeakMap<object, CallerSeal>();
 
 const LABEL: Record<HttpTransportName, string> = { api: 'API', local: 'local', lan: 'lan' };
 
@@ -126,6 +138,8 @@ export class ApiTransport {
   private readonly where: string;
   private readonly credentials: HttpConfig['credentials'];
   private readonly fetcher: FetchLike;
+  /** End-to-end encryption of desk operations: the hosted API only. */
+  private readonly e2e: E2eLayer | null = null;
 
   /** The hosted API from an API key (ApiOptions), or any /v1 API from an HttpConfig (local.ts, lan.ts). */
   constructor(o: ApiOptions | HttpConfig) {
@@ -157,6 +171,7 @@ export class ApiTransport {
       if (t) h['X-GaiaDesk-Desk-Token'] = t;
       return h;
     };
+    this.e2e = new E2eLayer(o, (method, path, r) => this.json(method, path, r as Req), this.baseUrl);
   }
 
   /** The UsageError for an operation this transport does not serve. */
@@ -174,8 +189,19 @@ export class ApiTransport {
     return `${this.baseUrl}${path}${q ? `?${q}` : ''}`;
   }
 
-  /** One request; an HTTP failure is the typed error from its envelope. */
+  /**
+   * One request; an HTTP failure is the typed error from its envelope. A desk
+   * operation (`r.e2e`) on the hosted API is sealed end to end when the
+   * desk can open it (api-e2e.ts decides, and retries once on
+   * `e2e_required` / `e2e_decrypt_failed`).
+   */
   async request(method: string, path: string, r: Req = {}, signal?: AbortSignal): Promise<ResponseLike> {
+    const e2e = r.e2e;
+    if (!this.e2e || !e2e) return this.send(method, path, r, signal, null);
+    return this.e2e.call(e2e.desk, e2e.op, e2e.request, r, (sealed) => this.send(method, path, r, signal, sealed));
+  }
+
+  private async send(method: string, path: string, r: Req, signal: AbortSignal | undefined, sealed: Sealed | null): Promise<ResponseLike> {
     const op = `${method} ${path}`;
     const query = { ...r.query };
     if (r.wake !== undefined) {
@@ -185,7 +211,20 @@ export class ApiTransport {
     const headers = { ...(await this.credentials(r.deskToken)) };
     headers.Accept = r.accept ?? 'application/json';
     let body: string | Uint8Array | undefined;
-    if (r.json !== undefined) {
+    if (sealed) {
+      // The sealed request carries what the query would have (path, tail, timeout); POST bodies become {"e2e": …}.
+      for (const k of SEALED_QUERY) delete query[k];
+      if (method === 'POST') {
+        headers['Content-Type'] = 'application/json';
+        body = JSON.stringify({ e2e: sealed.request });
+      } else {
+        headers[E2E_HEADER] = requestHeader(sealed.request);
+        if (r.bytes !== undefined) {
+          headers['Content-Type'] = E2E_FRAMES_CONTENT_TYPE;
+          body = await sealUpload(sealed.seal, r.bytes);
+        }
+      }
+    } else if (r.json !== undefined) {
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify(r.json);
     } else if (r.bytes !== undefined) {
@@ -219,7 +258,8 @@ export class ApiTransport {
     } finally {
       outer?.removeEventListener('abort', onAbort);
     }
-    if (!res.ok) throw await apiError(res, op);
+    if (!res.ok) throw await apiError(res, op, sealed ? (json) => openErrorEnvelope(json, sealed.seal, [op]) : undefined);
+    if (sealed) sealOf.set(res, sealed.seal);
     return res;
   }
 
@@ -228,11 +268,21 @@ export class ApiTransport {
     const op = `${method} ${path}`;
     const res = await this.request(method, path, r);
     const text = await res.text();
+    let json: unknown;
     try {
-      return JSON.parse(text) as T;
+      json = JSON.parse(text);
     } catch {
       throw new ProtocolError(`the GaiaDesk API answered ${op} with something that is not JSON`, { kind: 'protocol', argv: [op], status: res.status, requestId: res.headers.get('x-request-id') });
     }
+    const seal = sealOf.get(res);
+    return (seal ? openAnswer(json, seal, [op]) : json) as T;
+  }
+
+  /** A sealed stream's events opened into the plaintext ones (`kind`: which mapping). */
+  private streamOf(res: ResponseLike, kind: 'exec' | 'logs', op: string): { body: ByteStreamLike | null; unseal?: (ev: AsyncIterable<SseEvent>) => AsyncIterable<SseEvent> } {
+    const seal = sealOf.get(res);
+    if (!seal) return res;
+    return { body: res.body, unseal: (ev) => unsealSse(ev, seal, kind, [op]) };
   }
 
   private desk(deskId: string): string {
@@ -268,7 +318,7 @@ export class ApiTransport {
   async exec(deskId: string, command: string | readonly string[], o: A.RunShapeOptions & ApiCallOptions & { cwd?: string; stdin?: string | Uint8Array; check?: boolean; env?: Readonly<Record<string, string>> }): Promise<ExecResult> {
     const spec = this.execSpec(deskId, command, o);
     const path = `${this.desk(deskId)}/exec`;
-    const json = await this.json<Record<string, unknown>>('POST', path, { ...o, json: spec });
+    const json = await this.json<Record<string, unknown>>('POST', path, { ...o, json: spec, e2e: { desk: A.checkDesk(deskId), op: 'exec', request: { op: 'exec', spec } } });
     if (!isObj(json) || typeof json.exit !== 'number') throw new ProtocolError('the GaiaDesk API answered exec without a result', { kind: 'protocol', argv: [`POST ${path}`], json });
     const r = normalizeExecResult(json);
     const argv = [`POST ${path}`];
@@ -289,7 +339,9 @@ export class ApiTransport {
     const spec = this.execSpec(deskId, command, { ...o, stdin: o.stdin as string | Uint8Array | undefined });
     const path = `${this.desk(deskId)}/exec`;
     const { signal, ...rest } = o;
-    return new ApiStream(`POST ${path}`, 'exec', (s) => this.request('POST', path, { ...rest, json: spec, query: { stream: 1 }, accept: 'text/event-stream' }, s), signal);
+    const e2e = { desk: A.checkDesk(deskId), op: 'exec', request: { op: 'exec', spec, stream: true } };
+    const start = async (s: AbortSignal) => this.streamOf(await this.request('POST', path, { ...rest, json: spec, query: { stream: 1 }, accept: 'text/event-stream', e2e }, s), 'exec', `POST ${path}`);
+    return new ApiStream(`POST ${path}`, 'exec', start, signal);
   }
 
   /** `PUT /desks/{id}/files?path=`: one local file, at most 256 MB. A `remote` ending in `/` is a folder: the file keeps its name. */
@@ -313,7 +365,8 @@ export class ApiTransport {
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
     if (bytes.length > API_FILE_LIMIT) throw new UsageError('the API takes files up to 256 MB', { kind: 'usage', argv: ['upload'] });
     const path = `${this.desk(deskId)}/files`;
-    const r = await this.json<CpSummary>('PUT', path, { ...o, query: { path: remote }, bytes });
+    const e2e = { desk: A.checkDesk(deskId), op: 'file_put', request: { op: 'file_put', path: remote, size: bytes.length } };
+    const r = await this.json<CpSummary>('PUT', path, { ...o, query: { path: remote }, bytes, e2e });
     if (isObj(r) && Array.isArray(r.failed) && r.failed.length > 0) {
       throw new OperationFailedError(`${r.failed.length} file(s) failed to copy`, { exitCode: 1, argv: [`PUT ${path}`], json: r, kind: 'failed', desk: A.checkDesk(deskId) });
     }
@@ -323,7 +376,11 @@ export class ApiTransport {
   /** `GET /desks/{id}/files?path=`: the file's bytes. */
   async downloadBytes(deskId: string, remote: string, o: ApiCallOptions = {}): Promise<Uint8Array> {
     if (typeof remote !== 'string' || !remote) throw new UsageError('a remote path is required', { kind: 'usage' });
-    const res = await this.request('GET', `${this.desk(deskId)}/files`, { ...o, query: { path: remote }, accept: 'application/octet-stream' });
+    const path = `${this.desk(deskId)}/files`;
+    const e2e = { desk: A.checkDesk(deskId), op: 'file_get', request: { op: 'file_get', path: remote } };
+    const res = await this.request('GET', path, { ...o, query: { path: remote }, accept: 'application/octet-stream', e2e });
+    const seal = sealOf.get(res);
+    if (seal) return openDownload(await res.text(), seal, [`GET ${path}`]);
     return new Uint8Array(await res.arrayBuffer());
   }
 
@@ -356,7 +413,7 @@ export class ApiTransport {
     if (o.cwd !== undefined) spec.cwd = o.cwd;
     if (o.shell !== undefined) spec.shell = A.wireShell(o.shell);
     if (o.env !== undefined) spec.env = A.checkEnv(o.env);
-    return this.json<JobInfo>('POST', `${this.desk(deskId)}/jobs`, { ...o, json: spec });
+    return this.json<JobInfo>('POST', `${this.desk(deskId)}/jobs`, { ...o, json: spec, e2e: { desk: A.checkDesk(deskId), op: 'job_start', request: { op: 'job_start', spec } } });
   }
 
   /**
@@ -376,7 +433,9 @@ export class ApiTransport {
     const started = Date.now();
     for (;;) {
       const left = total === undefined ? API_WAIT_MAX : Math.max(0, total - (Date.now() - started) / 1000);
-      const json = await this.json<unknown>('GET', path, { ...o, query: { timeout: Math.min(API_WAIT_MAX, Math.ceil(left)) } });
+      const timeout = Math.min(API_WAIT_MAX, Math.ceil(left));
+      const e2e = { desk: A.checkDesk(deskId), op: 'job_wait', request: { op: 'job_wait', name, timeout_ms: timeout * 1000 } };
+      const json = await this.json<unknown>('GET', path, { ...o, query: { timeout }, e2e });
       const env = errorEnvelope(json);
       // A held wait that failed after its 200 began: the envelope, in the body.
       if (env) throw errorForKind(env.kind, env.message || 'the wait failed', envelopeDetails(env, { argv: [`GET ${path}`], json }));
@@ -392,19 +451,22 @@ export class ApiTransport {
   /** `GET /desks/{id}/jobs`: the list of the JobList. */
   async jobs(deskId: string, o: ApiCallOptions): Promise<JobInfo[]> {
     const path = `${this.desk(deskId)}/jobs`;
-    return listOf<JobInfo>(await this.json('GET', path, o), 'jobs', [`GET ${path}`]);
+    return listOf<JobInfo>(await this.json('GET', path, { ...o, e2e: { desk: A.checkDesk(deskId), op: 'job_list', request: { op: 'job_list' } } }), 'jobs', [`GET ${path}`]);
   }
 
   /** `DELETE /desks/{id}/jobs/{name}`: the stopped Job. */
   async killJob(deskId: string, name: string, o: ApiCallOptions): Promise<JobInfo> {
     A.killArgs(deskId, name);
-    return this.json<JobInfo>('DELETE', `${this.desk(deskId)}/jobs/${encodeURIComponent(name)}`, o);
+    return this.json<JobInfo>('DELETE', `${this.desk(deskId)}/jobs/${encodeURIComponent(name)}`, { ...o, e2e: { desk: A.checkDesk(deskId), op: 'job_kill', request: { op: 'job_kill', name } } });
   }
 
   /** `GET /desks/{id}/jobs/{name}/logs[?tail=]`: the output of the JobLogs. */
   async jobLogs(deskId: string, name: string, o: { tail?: number } & ApiCallOptions): Promise<string> {
     A.logsArgs(deskId, name, { tail: o.tail });
-    return textOf(await this.json<JobLogs>('GET', `${this.desk(deskId)}/jobs/${encodeURIComponent(name)}/logs`, { ...o, query: { tail: o.tail } }), 'output');
+    const request: Record<string, unknown> = { op: 'job_logs', name };
+    if (o.tail !== undefined) request.tail = o.tail;
+    const e2e = { desk: A.checkDesk(deskId), op: 'job_logs', request };
+    return textOf(await this.json<JobLogs>('GET', `${this.desk(deskId)}/jobs/${encodeURIComponent(name)}/logs`, { ...o, query: { tail: o.tail }, e2e }), 'output');
   }
 
   /** `GET /desks/{id}/jobs/{name}/logs?follow=1`: the JobLogEvents as an OutputStream. */
@@ -412,12 +474,17 @@ export class ApiTransport {
     A.logsArgs(deskId, name, { tail: o.tail, follow: true });
     const path = `${this.desk(deskId)}/jobs/${encodeURIComponent(name)}/logs`;
     const { signal, ...rest } = o;
-    return new ApiStream(`GET ${path}`, 'logs', (s) => this.request('GET', path, { ...rest, query: { follow: 1, tail: o.tail }, accept: 'text/event-stream' }, s), signal, name);
+    const request: Record<string, unknown> = { op: 'job_logs', name };
+    if (o.tail !== undefined) request.tail = o.tail;
+    request.follow = true;
+    const e2e = { desk: A.checkDesk(deskId), op: 'job_logs', request };
+    const start = async (s: AbortSignal) => this.streamOf(await this.request('GET', path, { ...rest, query: { follow: 1, tail: o.tail }, accept: 'text/event-stream', e2e }, s), 'logs', `GET ${path}`);
+    return new ApiStream(`GET ${path}`, 'logs', start, signal, name);
   }
 
   /** `GET /desks/{id}/stats`: the StatsReport. */
   async stats(deskId: string, o: ApiCallOptions): Promise<DeskStats> {
-    return this.json<DeskStats>('GET', `${this.desk(deskId)}/stats`, o);
+    return this.json<DeskStats>('GET', `${this.desk(deskId)}/stats`, { ...o, e2e: { desk: A.checkDesk(deskId), op: 'stats', request: { op: 'stats' } } });
   }
 
   /**
@@ -440,7 +507,7 @@ export class ApiTransport {
     const tokens: MintResult['tokens'] = [];
     for (const d of desks) {
       try {
-        const r = await this.json<MintResult>('POST', `${this.desk(d)}/tokens`, { ...o, json: spec });
+        const r = await this.json<MintResult>('POST', `${this.desk(d)}/tokens`, { ...o, json: spec, e2e: { desk: d, op: 'token_mint', request: { op: 'token_mint', spec } } });
         tokens.push(...listOf<MintResult['tokens'][number]>(r, 'tokens', ['token_mint']));
       } catch (e) {
         if (tokens.length > 0 && e instanceof GaiaDeskError) {
@@ -455,7 +522,7 @@ export class ApiTransport {
   /** `GET /desks/{id}/tokens`: the list of the TokenList. */
   async listTokens(deskId: string, o: ApiCallOptions): Promise<TokenInfo[]> {
     const path = `${this.desk(deskId)}/tokens`;
-    return listOf<TokenInfo>(await this.json('GET', path, o), 'tokens', [`GET ${path}`]);
+    return listOf<TokenInfo>(await this.json('GET', path, { ...o, e2e: { desk: A.checkDesk(deskId), op: 'token_list', request: { op: 'token_list' } } }), 'tokens', [`GET ${path}`]);
   }
 
   /** `DELETE /desks/{id}/tokens/{token_id}`: Revoked. */
@@ -463,12 +530,13 @@ export class ApiTransport {
     A.tokenRevokeArgs(deskId, which, !!o.account);
     if (typeof which !== 'string') throw this.notServed('revokeToken({ all: true })', 'revoke each token by id (listTokens), or use the CLI or native transport');
     if (o.account) throw this.notServed('revokeToken({ account: true })', 'the API revokes on the desk; drop `account`');
-    return this.json<TokenRevokeResult>('DELETE', `${this.desk(deskId)}/tokens/${encodeURIComponent(which)}`, o);
+    const e2e = { desk: A.checkDesk(deskId), op: 'token_revoke', request: { op: 'token_revoke', token: which } };
+    return this.json<TokenRevokeResult>('DELETE', `${this.desk(deskId)}/tokens/${encodeURIComponent(which)}`, { ...o, e2e });
   }
 }
 
 /** The typed error for a failed HTTP request: its error envelope, else a ProtocolError. */
-export async function apiError(res: ResponseLike, op: string): Promise<GaiaDeskError> {
+export async function apiError(res: ResponseLike, op: string, open?: (json: unknown) => unknown): Promise<GaiaDeskError> {
   const text = await res.text().catch(() => '');
   let json: unknown;
   try {
@@ -476,6 +544,8 @@ export async function apiError(res: ResponseLike, op: string): Promise<GaiaDeskE
   } catch {
     json = undefined;
   }
+  // A sealed operation's desk error: its real message opens from `e2e.events`.
+  if (open && json !== undefined) json = open(json);
   const headerId = res.headers.get('x-request-id');
   const ra = Number(res.headers.get('retry-after'));
   const retryAfter = res.headers.get('retry-after') !== null && Number.isFinite(ra) ? ra : null;

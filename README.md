@@ -8,7 +8,8 @@ through MCP.
 
 - Package: `@gaiadesk/sdk` (Node.js 18+, ESM, written in TypeScript, type
   declarations included)
-- Runtime dependencies: none required; one optional, `@gaiadesk/sdk-native`
+- Runtime dependencies: one, `@noble/ciphers` (XChaCha20-Poly1305 for
+  [end-to-end encryption](#end-to-end-encryption)); one optional, `@gaiadesk/sdk-native`
 
 **How it works.** Two backends, one API:
 
@@ -43,6 +44,7 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 - [Install](#install)
 - [Backends](#backends)
 - [API transport](#api-transport)
+- [End-to-end encryption](#end-to-end-encryption)
 - [Local and LAN](#local-and-lan)
 - [Quickstart](#quickstart)
 - [Credentials](#credentials)
@@ -101,7 +103,8 @@ with GaiaDesk; see its LICENSE); this SDK stays MIT.
 
 Given an `apiKey`, the client talks to GaiaDesk's hosted API
 (`https://api.gaiadesk.net/v1`) over HTTPS with the global `fetch` only: no
-`gaiadesk-cli`, no native binary, no runtime dependency (Node 18+). Without
+`gaiadesk-cli`, no native binary (Node 18+; desk operations are
+[end-to-end encrypted](#end-to-end-encryption) where the desk can open them). Without
 `apiKey`, nothing changes: the client picks the native or CLI backend
 exactly as before.
 
@@ -173,6 +176,60 @@ available over the API transport; use the CLI or native transport"):
 `revokeToken({all: true})` / `{account: true}`, `execStream` with
 `stdin: true`, `whoami`, and the CLI's own `version`, `versionInfo`,
 `features`, `raw`.
+
+## End-to-end encryption
+
+On the API transport, desk operations are **sealed** so GaiaDesk's servers
+relay only ciphertext: the command, its `env`, `stdin`, file paths and bytes,
+and all output and results are readable by the caller and the desk only. The
+server still sees the credentials, the route (the operation and the desk, a
+job name or token id in the path), `stream`/`follow`/`wake`, sizes, and how
+the operation ended (an exit, or an error's kind and reason). `local` and
+`lan` never leave the desk or the LAN and are not sealed.
+
+Before an operation the SDK reads the desk's X25519 key (`e2e_pub` from
+`GET /desks/{id}`, cached for 5 minutes) and seals the request to a fresh
+ephemeral key: X25519, HKDF-SHA256, XChaCha20-Poly1305, every message bound
+to the desk, the operation and its place in the stream (the protocol: the
+API reference's "End-to-end encryption"; the SDK reproduces its fixed test
+vectors). Results, streams, errors and file bytes come back exactly as in the
+clear; a desk's error carries its own message.
+
+```ts
+const gd = new GaiaDesk({
+  apiKey, deskToken,
+  e2e: 'require',                            // 'auto' (default) | 'require' | 'off'
+  e2eKeys: { '123456789': 'B6N8vBQgk8i3…' },  // optional: pin a desk's e2e_pub
+});
+```
+
+- `auto` (default): sealed when the desk lists a key; otherwise sent in the
+  clear with a one-time warning per desk (`onWarning`, default
+  `console.warn`), unless the desk **requires** end-to-end encryption: then
+  it is woken (`POST /desks/{id}/wake`) and asked again, and sealed or refused.
+- `require`: never in the clear. A desk that lists no key (asleep, offline,
+  or a GaiaDesk from before end-to-end encryption) is woken and asked again;
+  still none is an `E2eError` (a `RefusedError`, reason `e2e_unavailable`),
+  and nothing is sent.
+- `off`: plaintext, as before.
+- `e2eKeys`: a pinned key is sealed to even while the desk lists none; a
+  different key from the server is an `E2eError` (`e2e_key_mismatch`) and
+  nothing is sent.
+- A plaintext call refused `e2e_required` (409) is sealed and sent once more;
+  a sealed one the desk could not open (`e2e_decrypt_failed`, its key
+  rotated) is sealed to the key read again, once. Answers that do not open
+  (altered, reordered, or a plaintext answer to a sealed call) are a
+  `ProtocolError` (`e2e_decrypt_failed`, `e2e_malformed`,
+  `e2e_unsealed_answer`).
+- Reading a desk's key needs the API key's `desks:read` scope (and waking it
+  `desks:write`); in `auto`, a key that cannot be read means plaintext with
+  the warning.
+
+**The dependency.** X25519, HKDF and randomness come from the platform
+(`node:crypto`, else WebCrypto). XChaCha20-Poly1305 is in neither, so the SDK
+uses [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) 1.x (only
+its `xchacha20poly1305`): MIT, no dependencies of its own, audited (Cure53),
+Node 16+; its 2.x needs Node 20.19.
 
 ## Local and LAN
 
@@ -515,7 +572,8 @@ schema changes. [`src/types.ts`](src/types.ts) gives those types the SDK's
 public names. CI runs on Linux, macOS and Windows with Node 18, 20 and 22
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
-The only dev dependencies are `typescript` and `@types/node`.
+The only dev dependencies are `typescript` and `@types/node`; the one runtime
+dependency is `@noble/ciphers` (see [End-to-end encryption](#end-to-end-encryption)).
 
 ## License
 

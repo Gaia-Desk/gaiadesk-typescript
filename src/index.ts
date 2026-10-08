@@ -22,6 +22,7 @@ export {
   OperationFailedError,
   ProtocolError,
   CommandError,
+  E2eError,
 } from './errors.js';
 export { errorEnvelope } from './errors.js';
 export type { ErrorKind, ErrorEnvelope, ErrorDetails } from './errors.js';

@@ -94,8 +94,11 @@ export interface GaiaDeskOptions {
    * $GAIADESK_SDK_BACKEND. `raw()` and `mcp()` always run gaiadesk-cli.
    */
   backend?: 'auto' | 'native' | 'cli';
-  /** The native module to use instead of `require('@gaiadesk/sdk-native')` (tests, custom builds). */
-  native?: NativeModule;
+  /**
+   * The native module to use instead of `require('@gaiadesk/sdk-native')`
+   * (tests, custom builds); `null`: behave as if it were not installed.
+   */
+  native?: NativeModule | null;
   /**
    * A GaiaDesk API key (`ak_…`) or a signed-in person's session token: use
    * the `api` transport, GaiaDesk's hosted HTTPS API (only `fetch`; no
@@ -115,6 +118,18 @@ export interface GaiaDeskOptions {
   baseUrl?: string;
   /** API transport: the `fetch` to use (default: the global one). */
   fetch?: FetchLike;
+  /**
+   * API transport: end-to-end encryption of desk operations, so the hosted
+   * API relays only ciphertext. `auto` (default): sealed when the desk
+   * publishes a key (`e2e_pub`), else sent in the clear with a one-time
+   * warning (unless the desk requires it); `require`: never in the clear
+   * (no key, even after waking the desk: an `E2eError`); `off`: as before.
+   */
+  e2e?: 'auto' | 'require' | 'off';
+  /** API transport: pinned desk keys, `{deskId: e2e_pub}` (base64url). A different key from the server is an `E2eError`; nothing is sent. */
+  e2eKeys?: Readonly<Record<string, string>>;
+  /** Where the SDK's warnings go (default: `console.warn`). */
+  onWarning?: (message: string) => void;
   /**
    * How operations reach desks. Default: `api` given an `apiKey`, else
    * `direct` (the native library or gaiadesk-cli, see `backend`).
@@ -224,7 +239,7 @@ export class GaiaDesk {
     const usage = (m: string) => new UsageError(m, { kind: 'usage' });
     const given = (keys: (keyof GaiaDeskOptions)[]) => keys.filter((k) => o[k] !== undefined);
     const only = (allowed: (keyof GaiaDeskOptions)[], what: string) => {
-      const extra = given((['apiKey', 'deskToken', 'baseUrl', 'fetch', 'socketPath', 'token', 'fingerprint'] as const).filter((k) => !allowed.includes(k)));
+      const extra = given((['apiKey', 'deskToken', 'baseUrl', 'fetch', 'socketPath', 'token', 'fingerprint', 'e2e', 'e2eKeys'] as const).filter((k) => !allowed.includes(k)));
       if (extra.length) throw usage(`${extra.join(', ')} ${extra.length === 1 ? 'is' : 'are'} not for ${what}`);
     };
     if (t !== 'direct') {
@@ -244,8 +259,8 @@ export class GaiaDesk {
     }
     if (t === 'api') {
       if (o.apiKey === undefined) throw usage('the api transport needs an apiKey');
-      only(['apiKey', 'deskToken', 'baseUrl', 'fetch'], 'the api transport');
-      return new ApiTransport({ apiKey: o.apiKey, deskToken: o.deskToken, baseUrl: o.baseUrl, fetch: o.fetch });
+      only(['apiKey', 'deskToken', 'baseUrl', 'fetch', 'e2e', 'e2eKeys'], 'the api transport');
+      return new ApiTransport({ apiKey: o.apiKey, deskToken: o.deskToken, baseUrl: o.baseUrl, fetch: o.fetch, e2e: o.e2e, e2eKeys: o.e2eKeys, onWarning: o.onWarning });
     }
     if (t === 'local') {
       only(['deskToken', 'socketPath', 'token'], 'the local transport');
@@ -272,7 +287,8 @@ export class GaiaDesk {
     let mod: NativeModule | null = null;
     let why = 'not wanted';
     if (want === 'native' || (want === 'auto' && o.cli === undefined)) {
-      if (o.native) mod = o.native;
+      if (o.native === null) why = 'native: null (treated as not installed)';
+      else if (o.native) mod = o.native;
       else ({ module: mod, why = '' } = loadNative());
     }
     if (!mod && want === 'native') {

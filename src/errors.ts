@@ -106,6 +106,14 @@ export class OperationFailedError extends GaiaDeskError {}
 /** gaiadesk-cli printed something that is not the JSON it documents. */
 export class ProtocolError extends GaiaDeskError {}
 
+/**
+ * API transport, end-to-end encryption: the SDK would not send the operation
+ * in the clear (reason `e2e_unavailable`: `e2e: 'require'`, or a desk that
+ * requires it, and no key for the desk) or the server handed out a key other
+ * than the pinned one (`e2e_key_mismatch`). Nothing was sent to the desk.
+ */
+export class E2eError extends RefusedError {}
+
 /** `exec`/`shell` with `check: true`: the remote command exited non-zero (or timed out). */
 export class CommandError extends GaiaDeskError {
   readonly result: unknown;

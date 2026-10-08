@@ -49,9 +49,9 @@ test('backend: native when the module is there, cli when asked or when a cli is 
 });
 
 test('without @gaiadesk/sdk-native: auto falls back to the CLI, native is an error', () => {
-  const gd = new GaiaDesk({ env: { ...BASE_ENV } });
+  const gd = new GaiaDesk({ native: null, env: { ...BASE_ENV } });
   assert.equal(gd.backend, 'cli');
-  assert.throws(() => new GaiaDesk({ backend: 'native', env: { ...BASE_ENV } }).backend, CliNotFoundError);
+  assert.throws(() => new GaiaDesk({ backend: 'native', native: null, env: { ...BASE_ENV } }).backend, CliNotFoundError);
 });
 
 test('loadNative: a module whose binary does not load counts as absent', () => {

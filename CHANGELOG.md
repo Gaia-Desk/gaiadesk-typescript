@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased: end-to-end encrypted desk operations
+
+- API transport: desk operations (exec, execStream, jobs, logs, waitJob,
+  killJob, stats, upload/download, tokens) are sealed end to end to the
+  desk's X25519 key (`e2e_pub`): the hosted API relays ciphertext only, and
+  every result, stream event and error is what the plaintext call gives. The
+  protocol's fixed test vectors are reproduced byte for byte.
+- Options `e2e: 'auto' | 'require' | 'off'` (default `auto`: sealed when the
+  desk lists a key, else plaintext with a one-time warning, unless the desk
+  requires it), `e2eKeys` (pinned desk keys), `onWarning`. New error
+  `E2eError` (a `RefusedError`: `e2e_unavailable`, `e2e_key_mismatch`).
+  One retry each for `e2e_required` and a rotated key (`e2e_decrypt_failed`).
+- New runtime dependency `@noble/ciphers` ^1.3.0, for XChaCha20-Poly1305 only
+  (neither node:crypto nor WebCrypto has it): MIT, zero dependencies,
+  Cure53-audited, Node 16+ (2.x would need Node 20.19). X25519 and HKDF come
+  from node:crypto or WebCrypto.
+- `native: null` makes the client behave as if `@gaiadesk/sdk-native` were not
+  installed (the tests that need it absent no longer depend on what npm
+  installed).
+
 ## Unreleased: local and lan transports
 
 - `new GaiaDesk({ transport: 'local' })`: code running on a desk drives it

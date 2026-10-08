@@ -20,6 +20,7 @@ test('the public entry point exports the client, the errors and the MCP helpers'
     'OperationFailedError',
     'ProtocolError',
     'CommandError',
+    'E2eError',
     'locateCli',
     'toolText',
     'toolImage',
