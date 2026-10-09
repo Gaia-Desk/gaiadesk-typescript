@@ -1,10 +1,18 @@
 # GaiaDesk SDK for TypeScript
 
-Drive your GaiaDesk machines ("desks") from TypeScript and Node.js: list
-them and check that they are reachable, run commands and get exit codes
-back, stream output, copy files, run background jobs, read stats, mint and
-revoke scoped agent tokens, forward ports, and reach the screen tools
-through MCP.
+[![CI](https://github.com/Gaia-Desk/gaiadesk-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/Gaia-Desk/gaiadesk-typescript/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@gaiadesk/sdk)](https://www.npmjs.com/package/@gaiadesk/sdk)
+[![License: MIT](https://img.shields.io/github/license/Gaia-Desk/gaiadesk-typescript)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/Gaia-Desk/gaiadesk-typescript)](https://github.com/Gaia-Desk/gaiadesk-typescript/releases/latest)
+
+The official TypeScript and Node.js SDK for [GaiaDesk](https://gaiadesk.net)
+remote desktop: a typed client library for remote access automation from
+scripts, CI and AI agents. Drive your GaiaDesk machines ("desks") from code:
+list them and check that they are reachable, run commands on remote
+computers and get exit codes back, stream output, transfer files, run
+background jobs, read stats, mint and revoke scoped agent tokens, forward
+ports, and reach the screen tools through MCP. It works through GaiaDesk's
+native client library, `gaiadesk-cli`, or the hosted GaiaDesk Platform API.
 
 - Package: `@gaiadesk/sdk` (Node.js 18+, ESM, written in TypeScript, type
   declarations included)
@@ -29,9 +37,9 @@ GaiaDesk code; GaiaDesk itself is closed-source, and the native binary ships
 under its own licence (see [Backends](#backends)). Where the CLI has no JSON
 output, the SDK says so instead of guessing (see [Known gaps](#known-gaps)).
 
-Other GaiaDesk developer tools:
+Other GaiaDesk developer tools (all of them under [Links](#links)):
 
-- **Python SDK**: [Gaia-Desk/gaiadesk-python](https://github.com/Gaia-Desk/gaiadesk-python) (`pip install gaiadesk`)
+- **Python SDK**: [Gaia-Desk/gaiadesk-python](https://github.com/Gaia-Desk/gaiadesk-python)
 - **MCP server** for AI assistants: [Gaia-Desk/gaiadesk-mcp](https://github.com/Gaia-Desk/gaiadesk-mcp) (`npx -y @gaiadesk/mcp`)
 - **MCP or SDK?** [When to give a model the MCP server and when to use an SDK](https://github.com/Gaia-Desk/gaiadesk-mcp/blob/main/docs/mcp-vs-sdk.md)
 
@@ -53,6 +61,7 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 - [Examples](#examples)
 - [Known gaps](#known-gaps)
 - [Development](#development)
+- [Links](#links)
 
 ---
 
@@ -627,6 +636,23 @@ public names. CI runs on Linux, macOS and Windows with Node 18, 20 and 22
 
 The only dev dependencies are `typescript` and `@types/node`; the one runtime
 dependency is `@noble/ciphers` (see [End-to-end encryption](#end-to-end-encryption)).
+
+## Links
+
+- Package: [`@gaiadesk/sdk` on npm](https://www.npmjs.com/package/@gaiadesk/sdk)
+  (native backend: [`@gaiadesk/sdk-native`](https://www.npmjs.com/package/@gaiadesk/sdk-native))
+- Documentation: [Getting started](https://gaiadesk.net/docs/getting-started),
+  [The CLI for scripts and AI agents](https://gaiadesk.net/docs/cli-for-agents),
+  [Agent access](https://gaiadesk.net/docs/agent-access),
+  [Security](https://gaiadesk.net/docs/security)
+- GaiaDesk SDKs: TypeScript (this one), [Python](https://github.com/Gaia-Desk/gaiadesk-python),
+  [Go](https://github.com/Gaia-Desk/gaiadesk-go), [Java and Kotlin](https://github.com/Gaia-Desk/gaiadesk-java),
+  [.NET](https://github.com/Gaia-Desk/gaiadesk-dotnet), [Ruby](https://github.com/Gaia-Desk/gaiadesk-ruby),
+  [PHP](https://github.com/Gaia-Desk/gaiadesk-php), [Rust](https://github.com/Gaia-Desk/gaiadesk-rust);
+  the [MCP server](https://github.com/Gaia-Desk/gaiadesk-mcp) for AI assistants; the
+  [command line](https://github.com/Gaia-Desk/gaiadesk-cli), `gaiadesk-cli`
+- [Changelog](CHANGELOG.md) and [releases](https://github.com/Gaia-Desk/gaiadesk-typescript/releases)
+- [Security policy](https://github.com/Gaia-Desk/gaiadesk-typescript/security/policy)
 
 ## License
 
